@@ -63,10 +63,16 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", use_container_width=
         # 1. Fit GARCH Baseline
         _, garch_vol = fit_garch_model(df["Log_Return"])
 
+        # Convert garch_vol to pandas Series if it returns as numpy array
+        if isinstance(garch_vol, np.ndarray):
+            garch_vol = pd.Series(garch_vol, index=df.index[-len(garch_vol):])
+
         # 2. Fit LSTM
         if HAS_LSTM:
             try:
                 _, lstm_vol = train_lstm_volatility(df["Log_Return"], epochs=int(epochs))
+                if isinstance(lstm_vol, np.ndarray):
+                    lstm_vol = pd.Series(lstm_vol, index=df.index[-len(lstm_vol):])
             except Exception as e:
                 st.warning(f"LSTM Training Note: {e}. Utilizing GARCH baseline.")
                 lstm_vol = garch_vol
@@ -77,6 +83,8 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", use_container_width=
         if HAS_TRANSFORMER:
             try:
                 _, trans_vol = train_transformer_volatility(df["Log_Return"], epochs=int(epochs))
+                if isinstance(trans_vol, np.ndarray):
+                    trans_vol = pd.Series(trans_vol, index=df.index[-len(trans_vol):])
             except Exception as e:
                 st.warning(f"Transformer Training Note: {e}. Utilizing GARCH baseline.")
                 trans_vol = garch_vol
@@ -87,9 +95,9 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", use_container_width=
         min_len = min(len(garch_vol), len(lstm_vol), len(trans_vol))
         plot_dates = df.index[-min_len:]
         
-        garch_series = garch_vol[-min_len:] * 100
-        lstm_series = lstm_vol[-min_len:] * 100
-        trans_series = trans_vol[-min_len:] * 100
+        garch_series = garch_vol.iloc[-min_len:] * 100
+        lstm_series = lstm_vol.iloc[-min_len:] * 100
+        trans_series = trans_vol.iloc[-min_len:] * 100
 
         # Latest Forecast Metrics
         latest_price = df["Close"].iloc[-1]
@@ -166,14 +174,13 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", use_container_width=
                 "Date": plot_dates[-15:].strftime("%Y-%m-%d"),
                 "Asset Spot ($)": df["Close"].iloc[-15:].values,
                 "Log Return (%)": df["Log_Return"].iloc[-15:].values * 100,
-                "GARCH Vol (%)": garch_series[-15:].values,
-                "LSTM Vol (%)": lstm_series[-15:].values,
-                "Transformer Vol (%)": trans_series[-15:].values
+                "GARCH Vol (%)": garch_series.iloc[-15:].values,
+                "LSTM Vol (%)": lstm_series.iloc[-15:].values,
+                "Transformer Vol (%)": trans_series.iloc[-15:].values
             })
             st.dataframe(diag_df.style.format({
                 "Asset Spot ($)": "${:,.2f}",
                 "Log Return (%)": "{:+.2f}%",
-                "GARCH Vol (%)": "{:+.2f}%",
                 "GARCH Vol (%)": "{:.2f}%",
                 "LSTM Vol (%)": "{:.2f}%",
                 "Transformer Vol (%)": "{:.2f}%"
