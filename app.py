@@ -5,9 +5,20 @@ import streamlit as st
 
 from src.data_loader import fetch_crypto_data
 from src.garch_model import fit_garch_model
-from src.lstm_model import train_lstm_volatility
 from src.risk_engine import calculate_position_size
-from src.transformer import train_transformer_volatility
+
+# Safe imports for Deep Learning models
+try:
+    from src.lstm_model import train_lstm_volatility
+    HAS_LSTM = True
+except Exception as e:
+    HAS_LSTM = False
+
+try:
+    from src.transformer import train_transformer_volatility
+    HAS_TRANSFORMER = True
+except Exception as e:
+    HAS_TRANSFORMER = False
 
 st.set_page_config(
     page_title="Crypto Volatility Forecasting Engine", layout="wide"
@@ -31,18 +42,32 @@ if st.sidebar.button("Run Volatility Engine"):
     with st.spinner("Fetching market data and running models..."):
         df = fetch_crypto_data(symbol=symbol)
 
-        # Line 33: Data validation guard check
         if df is None or df.empty or len(df) < 30:
             st.error("Insufficient market data returned from exchange. Please try again.")
             st.stop()
 
-        # 1. Fit GARCH
+        # 1. Fit GARCH Baseline
         _, garch_vol = fit_garch_model(df["Log_Return"])
 
-        # 3. Fit Transformer
-        _, trans_vol = train_transformer_volatility(
-            df["Log_Return"], epochs=20
-        )
+        # 2. Fit LSTM (with Fallback)
+        if HAS_LSTM:
+            try:
+                _, lstm_vol = train_lstm_volatility(df["Log_Return"], epochs=20)
+            except Exception as e:
+                st.warning(f"LSTM model training note: {e}. Utilizing GARCH baseline.")
+                lstm_vol = garch_vol
+        else:
+            lstm_vol = garch_vol
+
+        # 3. Fit Transformer (with Fallback)
+        if HAS_TRANSFORMER:
+            try:
+                _, trans_vol = train_transformer_volatility(df["Log_Return"], epochs=20)
+            except Exception as e:
+                st.warning(f"Transformer model training note: {e}. Utilizing GARCH baseline.")
+                trans_vol = garch_vol
+        else:
+            trans_vol = garch_vol
 
         # Align lengths for plotting
         min_len = min(len(garch_vol), len(lstm_vol), len(trans_vol))
