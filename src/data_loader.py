@@ -10,19 +10,18 @@ def fetch_crypto_data(symbol="BTC-USD", period="2y"):
     """
     df = pd.DataFrame()
     
-    # Try 1: yfinance
+    # Primary: Yahoo Finance
     try:
         ticker = yf.Ticker(symbol)
         df = ticker.history(period=period)
     except Exception as e:
         print(f"yfinance download exception: {e}")
 
-    # Fallback to CCXT (Bybit Public Spot) if yfinance returned empty data
-    if df.empty:
+    # Fallback: CCXT / Bybit Spot API
+    if df is None or df.empty:
         print(f"yfinance returned empty data for {symbol}. Falling back to Bybit CCXT...")
         try:
             exchange = ccxt.bybit({"enableRateLimit": True})
-            # Map ticker format (e.g. BTC-USD -> BTC/USDT)
             ccxt_symbol = symbol.replace("-USD", "/USDT")
             ohlcv = exchange.fetch_ohlcv(ccxt_symbol, timeframe="1d", limit=365)
             
@@ -35,7 +34,7 @@ def fetch_crypto_data(symbol="BTC-USD", period="2y"):
         except Exception as ex:
             print(f"CCXT fallback error: {ex}")
 
-    if df.empty:
+    if df is None or df.empty:
         raise ValueError(
             f"Failed to fetch market data for {symbol} from both Yahoo Finance and CCXT."
         )
