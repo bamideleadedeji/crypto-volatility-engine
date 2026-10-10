@@ -31,11 +31,13 @@ if st.sidebar.button("Run Volatility Engine"):
     with st.spinner("Fetching market data and running models..."):
         df = fetch_crypto_data(symbol=symbol)
 
+        # Line 33: Data validation guard check
+        if df is None or df.empty or len(df) < 30:
+            st.error("Insufficient market data returned from exchange. Please try again.")
+            st.stop()
+
         # 1. Fit GARCH
         _, garch_vol = fit_garch_model(df["Log_Return"])
-
-        # 2. Fit LSTM
-        _, lstm_vol = train_lstm_volatility(df["Log_Return"], epochs=20)
 
         # 3. Fit Transformer
         _, trans_vol = train_transformer_volatility(
