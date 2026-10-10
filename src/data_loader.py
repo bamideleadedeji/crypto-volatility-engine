@@ -1,32 +1,48 @@
-import numpy as np
 import pandas as pd
+import numpy as np
 import yfinance as yf
+import ccxt
 
+def fetch_crypto_data(symbol="BTC-USD", period="2y"):
+    """
+    Fetches historical crypto price data with fallback to CCXT (Bybit) 
+    if Yahoo Finance blocks cloud server requests.
+    """
+    df = pd.DataFrame()
+    
+    # Try 1: yfinance
+    try:
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period=period)
+    except Exception as e:
+        print(f"yfinance download exception: {e}")
 
-def fetch_crypto_data(
-    symbol='BTC-USD', period='2y', interval='1d'
-) -> pd.DataFrame:
-  """Fetches historical OHLCV data from Yahoo Finance and computes daily log returns."""
-  print(f'Fetching data for {symbol}...')
-  df = yf.download(symbol, period=period, interval=interval, progress=False)
+    # Fallback to CCXT (Bybit Public Spot) if yfinance returned empty data
+    if df.empty:
+        print(f"yfinance returned empty data for {symbol}. Falling back to Bybit CCXT...")
+        try:
+            exchange = ccxt.bybit({"enableRateLimit": True})
+            # Map ticker format (e.g. BTC-USD -> BTC/USDT)
+            ccxt_symbol = symbol.replace("-USD", "/USDT")
+            ohlcv = exchange.fetch_ohlcv(ccxt_symbol, timeframe="1d", limit=365)
+            
+            df = pd.DataFrame(
+                ohlcv, 
+                columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"]
+            )
+            df["Timestamp"] = pd.to_datetime(df["Timestamp"], unit="ms")
+            df.set_index("Timestamp", inplace=True)
+        except Exception as ex:
+            print(f"CCXT fallback error: {ex}")
 
-  # Handle MultiIndex columns if present
-  if isinstance(df.columns, pd.MultiIndex):
-    df.columns = df.columns.get_level_values(0)
+    if df.empty:
+        raise ValueError(
+            f"Failed to fetch market data for {symbol} from both Yahoo Finance and CCXT."
+        )
 
-  # Calculate daily log returns: r_t = ln(P_t / P_{t-1})
-  df['Log_Return'] = np.log(df['Close'] / df['Close'].shift(1))
-
-  # Calculate annualized realized volatility over a 21-day rolling window
-  df['Realized_Vol_21d'] = df['Log_Return'].rolling(window=21).std() * np.sqrt(
-      365
-  )
-
-  df = df.dropna()
-  return df
-
-
-if __name__ == '__main__':
-  data = fetch_crypto_data()
-  print("Data head with Log Returns:")
-  print(data[['Close', 'Log_Return', 'Realized_Vol_21d']].head())
+    # Compute returns
+    df["Close"] = df["Close"].astype(float)
+    df["Log_Return"] = np.log(df["Close"] / df["Close"].shift(1))
+    df.dropna(subset=["Log_Return"], inplace=True)
+    
+    return df
