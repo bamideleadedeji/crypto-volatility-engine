@@ -1,3 +1,11 @@
+import os
+import torch
+
+# Restrict PyTorch thread allocation to prevent Render 512MB RAM OOM crashes
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+torch.set_num_threads(1)
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
