@@ -54,7 +54,7 @@ confidence_level = st.sidebar.slider(
     "VaR Confidence Level (%)", min_value=90.0, max_value=99.0, value=95.0, step=1.0
 ) / 100.0
 epochs = st.sidebar.number_input(
-    "Neural Network Epochs", value=20, min_value=5, max_value=100, step=5
+    "Neural Network Epochs", value=10, min_value=5, max_value=50, step=5
 )
 
 st.sidebar.divider()
