@@ -3,8 +3,8 @@ headless = true
 address = "0.0.0.0"
 enableCORS = false
 enableXsrfProtection = false
-maxMessageSize = 200
+maxMessageSize = 500
+allowRunOnSave = false
 
 [browser]
 gatherUsageStats = false
-serverAddress = "0.0.0.0"
