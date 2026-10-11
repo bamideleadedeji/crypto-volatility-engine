@@ -1,3 +1,10 @@
+import gc
+import torch
+
+# Inside train_transformer_volatility right before returning:
+del X_tensor, y_tensor, model
+gc.collect()
+
 import numpy as np
 import pandas as pd
 import torch
