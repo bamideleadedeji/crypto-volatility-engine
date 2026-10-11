@@ -2,16 +2,22 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import ccxt
+import streamlit as st
 
+
+@st.cache_data(ttl=1800, show_spinner=False)
 def fetch_crypto_data(symbol="BTC-USD", period="2y"):
     """
     Fetches historical crypto price data with multi-tier fallback:
     1. Yahoo Finance (yfinance)
     2. CCXT / Bybit Spot API
     3. Synthetic Log-Return Generator (Guarantees zero app crashes)
+
+    Cached in RAM for 30 minutes (ttl=1800) to optimize network overhead
+    and prevent rate-limit bans during high-frequency UI interactions.
     """
     df = pd.DataFrame()
-    
+
     # Tier 1: Yahoo Finance
     try:
         ticker = yf.Ticker(symbol)
@@ -26,10 +32,10 @@ def fetch_crypto_data(symbol="BTC-USD", period="2y"):
             exchange = ccxt.bybit({"enableRateLimit": True, "timeout": 10000})
             ccxt_symbol = symbol.replace("-USD", "/USDT")
             ohlcv = exchange.fetch_ohlcv(ccxt_symbol, timeframe="1d", limit=365)
-            
+
             if ohlcv:
                 df = pd.DataFrame(
-                    ohlcv, 
+                    ohlcv,
                     columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"]
                 )
                 df["Timestamp"] = pd.to_datetime(df["Timestamp"], unit="ms")
@@ -44,7 +50,7 @@ def fetch_crypto_data(symbol="BTC-USD", period="2y"):
         np.random.seed(42)
         returns = np.random.normal(loc=0.001, scale=0.03, size=365)
         price_path = 60000.0 * np.exp(np.cumsum(returns))
-        
+
         df = pd.DataFrame({
             "Close": price_path
         }, index=dates)
@@ -53,5 +59,5 @@ def fetch_crypto_data(symbol="BTC-USD", period="2y"):
     df["Close"] = df["Close"].astype(float)
     df["Log_Return"] = np.log(df["Close"] / df["Close"].shift(1))
     df.dropna(subset=["Log_Return"], inplace=True)
-    
+
     return df
