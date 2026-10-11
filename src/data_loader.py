@@ -7,27 +7,34 @@ import streamlit as st
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_crypto_data(symbol="BTC-USD", period="2y"):
     """
-    Fetches real-time market data directly from Bybit's Spot API via CCXT.
-    Cached for 30 minutes (ttl=1800) to prevent rate limits while maintaining 
-    authentic live price feeds.
+    Fetches real-time OHLCV market data directly from Bybit's Public Spot API.
+    Configured specifically for cloud proxies (Render/Streamlit Cloud) with 
+    explicit REST endpoints and timeout controls.
     """
-    # 1. Map symbols to Bybit Spot format (e.g., BTC-USD -> BTC/USDT)
+    # 1. Map symbols to Bybit Spot format (BTC-USD -> BTC/USDT)
     ccxt_symbol = symbol.replace("-USD", "/USDT")
-    
+    if "/" not in ccxt_symbol:
+        ccxt_symbol = f"{symbol}/USDT"
+
     df = pd.DataFrame()
-    
-    # 2. Fetch Live Market Data from Bybit
+
+    # 2. Configure CCXT Bybit with direct REST endpoint parameters
     try:
         exchange = ccxt.bybit({
-            "enableRateLimit": True,
-            "timeout": 15000,
-            "headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            'enableRateLimit': True,
+            'timeout': 20000,
+            'options': {
+                'defaultType': 'spot',
+                'adjustForTimeDifference': True,
+            },
+            'headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept': 'application/json',
             }
         })
-        
-        # Fetch up to 1000 daily candles directly from Bybit
-        ohlcv = exchange.fetch_ohlcv(ccxt_symbol, timeframe="1d", limit=1000)
+
+        # Fetch up to 730 daily candles directly from Bybit
+        ohlcv = exchange.fetch_ohlcv(ccxt_symbol, timeframe="1d", limit=730)
 
         if ohlcv and len(ohlcv) > 0:
             df = pd.DataFrame(
@@ -36,17 +43,16 @@ def fetch_crypto_data(symbol="BTC-USD", period="2y"):
             )
             df["Timestamp"] = pd.to_datetime(df["Timestamp"], unit="ms")
             df.set_index("Timestamp", inplace=True)
-            
+
     except Exception as e:
-        st.error(f"Bybit API Live Fetch Error for {ccxt_symbol}: {e}")
+        print(f"Bybit API Live Fetch Exception for {ccxt_symbol}: {e}")
         return pd.DataFrame()
 
-    # 3. Validate Data
+    # 3. Validate Data Extraction
     if df.empty or "Close" not in df.columns or len(df) < 30:
-        st.warning(f"Could not retrieve sufficient live market data for {symbol} from Bybit.")
         return pd.DataFrame()
 
-    # 4. Compute Log Returns on Live Prices
+    # 4. Clean Data & Compute Log Returns
     df["Close"] = df["Close"].astype(float)
     df["Log_Return"] = np.log(df["Close"] / df["Close"].shift(1))
     df.dropna(subset=["Log_Return"], inplace=True)
