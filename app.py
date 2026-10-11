@@ -1,7 +1,7 @@
 import os
 import torch
 
-# Restrict PyTorch thread allocation to prevent Render 512MB RAM OOM crashes
+# Essential for Render Free Tier CPU/Memory Stability
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 torch.set_num_threads(1)
@@ -54,7 +54,7 @@ confidence_level = st.sidebar.slider(
     "VaR Confidence Level (%)", min_value=90.0, max_value=99.0, value=95.0, step=1.0
 ) / 100.0
 epochs = st.sidebar.number_input(
-    "Neural Network Epochs", value=10, min_value=5, max_value=50, step=5
+    "Neural Network Epochs", value=10, min_value=5, max_value=30, step=5
 )
 
 st.sidebar.divider()
