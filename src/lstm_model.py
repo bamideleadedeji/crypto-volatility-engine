@@ -3,6 +3,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.preprocessing import StandardScaler
+import streamlit as st
 
 
 class LSTMVolatilityModel(nn.Module):
@@ -39,10 +40,17 @@ def prepare_sequences(data: np.ndarray, seq_length: int = 20):
     return np.array(xs), np.array(ys)
 
 
+@st.cache_resource(show_spinner=False)
 def train_lstm_volatility(
     returns: pd.Series, seq_length: int = 20, epochs: int = 30
 ):
-    """Trains an LSTM model on absolute/squared returns as proxies for volatility."""
+    """
+    Trains an LSTM model on absolute/squared returns as proxies for volatility.
+
+    Cached as a system resource (@st.cache_resource) to keep the PyTorch model
+    and predicted volatility array in memory, preventing repeated backpropagation
+    overhead when users interact with the Streamlit dashboard.
+    """
     vol_proxy = np.abs(returns.values).reshape(-1, 1)
 
     scaler = StandardScaler()
