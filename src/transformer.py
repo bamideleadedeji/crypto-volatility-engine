@@ -3,6 +3,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.preprocessing import StandardScaler
+import streamlit as st
 
 
 class TransformerVolatilityModel(nn.Module):
@@ -38,10 +39,17 @@ class TransformerVolatilityModel(nn.Module):
         return out
 
 
+@st.cache_resource(show_spinner=False)
 def train_transformer_volatility(
     returns: pd.Series, seq_length: int = 20, epochs: int = 30
 ):
-    """Trains a Transformer model on absolute returns to forecast daily volatility."""
+    """
+    Trains a Transformer model on absolute returns to forecast daily volatility.
+
+    Cached as a system resource (@st.cache_resource) to retain the PyTorch Transformer
+    encoder and predicted volatility array in memory, avoiding re-running multi-head
+    attention training loops during dashboard updates.
+    """
     vol_proxy = np.abs(returns.values).reshape(-1, 1)
 
     scaler = StandardScaler()
