@@ -92,7 +92,7 @@ def load_cached_market_data(ticker_symbol: str) -> pd.DataFrame:
 if "analytics_results" not in st.session_state:
     st.session_state["analytics_results"] = None
 
-if st.sidebar.button("🚀 Execute Quantitative Analytics", use_container_width=True):
+if st.sidebar.button("🚀 Execute Quantitative Analytics", key="btn_run_analytics", width="stretch"):
     with st.spinner("Retrieving market data feed, parameterizing models, and performing econometric audit..."):
         
         # Load Cached Market Data
@@ -174,7 +174,7 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", use_container_width=
         }
 
 # ----------------------------------------------------------------------
-# 5. Dashboard Rendering & Paper Trading Simulator
+# 5. Dashboard Rendering & Execution Engine
 # ----------------------------------------------------------------------
 if st.session_state["analytics_results"] is not None:
     res = st.session_state["analytics_results"]
@@ -219,7 +219,7 @@ if st.session_state["analytics_results"] is not None:
             xaxis_title="Timeline", yaxis_title="Conditional Volatility (%)",
             template="plotly_white", height=520
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     with tab_table:
         diag_df = pd.DataFrame({
@@ -233,7 +233,7 @@ if st.session_state["analytics_results"] is not None:
         st.dataframe(diag_df.style.format({
             "Asset Spot ($)": "${:,.2f}", "Log Return (%)": "{:+.2f}%",
             "GARCH Vol (%)": "{:.2f}%", "LSTM Vol (%)": "{:.2f}%", "Transformer Vol (%)": "{:.2f}%"
-        }), use_container_width=True)
+        }), width="stretch")
 
     with tab_stats:
         s1, s2, s3 = st.columns(3)
@@ -263,8 +263,9 @@ if st.session_state["analytics_results"] is not None:
         alloc_df = pd.DataFrame({"Category": ["Target Position", "Risk Buffer"], "Amount ($)": [rec_pos_val, cash_val]})
         fig_pie = px.pie(alloc_df, values="Amount ($)", names="Category", hole=0.4)
         fig_pie.update_layout(height=280, margin=dict(l=20, r=20, t=30, b=20))
-        st.plotly_chart(fig_pie, use_container_width=True)
-# -------------------------------------------------------------
+        st.plotly_chart(fig_pie, width="stretch")
+
+    # -------------------------------------------------------------
     # Section 4: Live Risk-Engineered Paper & Testnet Execution Panel
     # -------------------------------------------------------------
     st.divider()
@@ -278,7 +279,8 @@ if st.session_state["analytics_results"] is not None:
     execution_mode = st.radio(
         "Select Execution Venue:",
         ["Virtual Paper Trading (Local)", "Bybit Testnet API (Live Sandbox)"],
-        horizontal=True
+        horizontal=True,
+        key="radio_execution_venue"
     )
 
     portfolio = st.session_state["paper_portfolio"]
@@ -298,22 +300,18 @@ if st.session_state["analytics_results"] is not None:
 
     col_buy, col_sell = st.columns(2)
 
-    # -------------------------------------------------------------
     # BUY ORDER ROUTING
-    # -------------------------------------------------------------
     with col_buy:
         rec_allocation_usd = float(str(risk_summary.get("recommended_position_usd", "$0")).replace("$", "").replace(",", ""))
         st.markdown(f"**Target Recommended Allocation:** `${rec_allocation_usd:,.2f}`")
         
-        if st.button(f"📥 Execute VaR-Sized BUY ({current_symbol})", use_container_width=True):
+        if st.button(f"📥 Execute VaR-Sized BUY ({current_symbol})", key="btn_execute_var_buy", width="stretch"):
             if execution_mode == "Bybit Testnet API (Live Sandbox)":
                 if not bybit_key or not bybit_secret:
                     st.error("❌ Bybit Testnet keys not found in Render Environment Variables.")
                 else:
                     st.info("🚀 Transmitting VaR-sized order to Bybit V5 Testnet API...")
-                    # Routes order through src/bybit_execution.py when triggered
             else:
-                # Executes local paper trade using session_state
                 if rec_allocation_usd <= 0 or rec_allocation_usd > portfolio["cash_usd"]:
                     st.error("Insufficient virtual cash buffer to execute target size.")
                 else:
@@ -339,14 +337,12 @@ if st.session_state["analytics_results"] is not None:
                     st.success(f"Executed BUY order for {units_to_buy:.4f} {current_symbol} at ${latest_price:,.2f}")
                     st.rerun()
 
-    # -------------------------------------------------------------
     # SELL ORDER ROUTING
-    # -------------------------------------------------------------
     with col_sell:
         has_position = current_symbol in portfolio["positions"] and portfolio["positions"][current_symbol]["units"] > 0
         st.markdown(f"**Current Asset Holdings:** `{portfolio['positions'].get(current_symbol, {}).get('units', 0.0):.4f} {current_symbol}`")
         
-        if st.button(f"📤 Liquidate Position (SELL ALL)", use_container_width=True, disabled=not has_position):
+        if st.button(f"📤 Liquidate Position (SELL ALL)", key="btn_execute_sell_all", width="stretch", disabled=not has_position):
             pos_data = portfolio["positions"].pop(current_symbol)
             sell_value_usd = pos_data["units"] * latest_price
             portfolio["cash_usd"] += sell_value_usd
@@ -367,85 +363,6 @@ if st.session_state["analytics_results"] is not None:
     if portfolio["trade_history"]:
         with st.expander("📜 Virtual Execution Audit Trail & Order History"):
             trade_df = pd.DataFrame(portfolio["trade_history"])
-            st.dataframe(trade_df, use_container_width=True)
-
-    gc.collect()
-    # -------------------------------------------------------------
-    # Section 4: Live Paper Execution Panel
-    # -------------------------------------------------------------
-    st.divider()
-    st.subheader("⚡ Live Risk-Engineered Paper Execution Panel")
-    
-    portfolio = st.session_state["paper_portfolio"]
-    
-    p1, p2, p3 = st.columns(3)
-    p1.metric("Available Virtual Cash", f"${portfolio['cash_usd']:,.2f}")
-    
-    open_position_val = sum(
-        pos["units"] * latest_price 
-        for sym, pos in portfolio["positions"].items() if sym == current_symbol
-    )
-    p2.metric(f"Open Position Value ({current_symbol})", f"${open_position_val:,.2f}")
-    
-    total_portfolio_val = portfolio["cash_usd"] + open_position_val
-    p3.metric("Total Account Equity", f"${total_portfolio_val:,.2f}")
-
-    col_buy, col_sell = st.columns(2)
-
-    with col_buy:
-        rec_allocation_usd = float(str(risk_summary.get("recommended_position_usd", "$0")).replace("$", "").replace(",", ""))
-        st.markdown(f"**Target Recommended Allocation:** `${rec_allocation_usd:,.2f}`")
-        if st.button(f"📥 Execute VaR-Sized BUY ({current_symbol})", use_container_width=True):
-            if rec_allocation_usd <= 0 or rec_allocation_usd > portfolio["cash_usd"]:
-                st.error("Insufficient virtual cash buffer to execute target size.")
-            else:
-                units_to_buy = rec_allocation_usd / latest_price
-                portfolio["cash_usd"] -= rec_allocation_usd
-                
-                if current_symbol in portfolio["positions"]:
-                    existing = portfolio["positions"][current_symbol]
-                    total_units = existing["units"] + units_to_buy
-                    avg_entry = ((existing["units"] * existing["entry_price"]) + rec_allocation_usd) / total_units
-                    portfolio["positions"][current_symbol] = {"units": total_units, "entry_price": avg_entry}
-                else:
-                    portfolio["positions"][current_symbol] = {"units": units_to_buy, "entry_price": latest_price}
-
-                portfolio["trade_history"].append({
-                    "Timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "Type": "BUY",
-                    "Asset": current_symbol,
-                    "Price": latest_price,
-                    "Amount ($)": rec_allocation_usd,
-                    "Units": units_to_buy
-                })
-                st.success(f"Executed BUY order for {units_to_buy:.4f} {current_symbol} at ${latest_price:,.2f}")
-                st.rerun()
-
-    with col_sell:
-        has_position = current_symbol in portfolio["positions"] and portfolio["positions"][current_symbol]["units"] > 0
-        st.markdown(f"**Current Asset Holdings:** `{portfolio['positions'].get(current_symbol, {}).get('units', 0.0):.4f} {current_symbol}`")
-        
-        if st.button(f"📤 Liquidate Position (SELL ALL)", use_container_width=True, disabled=not has_position):
-            pos_data = portfolio["positions"].pop(current_symbol)
-            sell_value_usd = pos_data["units"] * latest_price
-            portfolio["cash_usd"] += sell_value_usd
-            
-            pnl_usd = sell_value_usd - (pos_data["units"] * pos_data["entry_price"])
-            
-            portfolio["trade_history"].append({
-                "Timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "Type": "SELL",
-                "Asset": current_symbol,
-                "Price": latest_price,
-                "Amount ($)": sell_value_usd,
-                "Realized P&L ($)": pnl_usd
-            })
-            st.success(f"Liquidated position for ${sell_value_usd:,.2f} (Realized P&L:${pnl_usd:+,.2f})")
-            st.rerun()
-
-    if portfolio["trade_history"]:
-        with st.expander("📜 Virtual Execution Audit Trail & Order History"):
-            trade_df = pd.DataFrame(portfolio["trade_history"])
-            st.dataframe(trade_df, use_container_width=True)
+            st.dataframe(trade_df, width="stretch")
 
     gc.collect()
