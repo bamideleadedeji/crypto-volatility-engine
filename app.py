@@ -1,7 +1,10 @@
 import os
+import gc
 import torch
 
-# Essential for Render Free Tier CPU/Memory Stability
+# ----------------------------------------------------------------------
+# 1. Threading & Memory Guards for Render Free Tier (512MB RAM Limit)
+# ----------------------------------------------------------------------
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 torch.set_num_threads(1)
@@ -16,20 +19,23 @@ from src.data_loader import fetch_crypto_data
 from src.garch_model import fit_garch_model
 from src.risk_engine import calculate_position_size
 
-# Safe imports for Deep Learning models
+# Safe import for LSTM model
 try:
     from src.lstm_model import train_lstm_volatility
     HAS_LSTM = True
 except Exception:
     HAS_LSTM = False
 
+# Safe import for Transformer model
 try:
     from src.transformer import train_transformer_volatility
     HAS_TRANSFORMER = True
 except Exception:
     HAS_TRANSFORMER = False
 
-# Page Configuration - Executive Theme
+# ----------------------------------------------------------------------
+# 2. Page Configuration & Theme Setup
+# ----------------------------------------------------------------------
 st.set_page_config(
     page_title="Crypto Volatility & Quantitative Risk Suite",
     page_icon="📊",
@@ -42,7 +48,7 @@ st.title("📈 Crypto Volatility Forecasting & Quantitative Risk Suite")
 st.caption("Institutional Multi-Model Benchmarking Engine (GARCH(1,1) vs. LSTM vs. Transformer) with Parametric VaR Risk Targeting")
 st.divider()
 
-# Sidebar controls
+# Sidebar Controls
 st.sidebar.header("🕹️ Institutional Controls")
 symbol = st.sidebar.selectbox(
     "Asset Identifier", ["BTC-USD", "ETH-USD", "SOL-USD"], index=0
@@ -54,15 +60,33 @@ confidence_level = st.sidebar.slider(
     "VaR Confidence Level (%)", min_value=90.0, max_value=99.0, value=95.0, step=1.0
 ) / 100.0
 epochs = st.sidebar.number_input(
-    "Neural Network Epochs", value=10, min_value=5, max_value=30, step=5
+    "Neural Network Epochs", value=10, min_value=5, max_value=20, step=5
 )
 
 st.sidebar.divider()
 st.sidebar.info("💡 **Consultant Note:** Benchmarks econometric time-series against deep learning architectures to optimize risk-weighted position sizing.")
 
+# ----------------------------------------------------------------------
+# 3. Cached Data Fetcher (Prevents HTTP 429 Rate Limiting)
+# ----------------------------------------------------------------------
+@st.cache_data(ttl=900, show_spinner=False)
+def load_cached_market_data(ticker_symbol: str) -> pd.DataFrame:
+    """Fetches market data with a 15-minute TTL cache to avoid hitting API rate limits."""
+    data = fetch_crypto_data(symbol=ticker_symbol)
+    if data is not None and not data.empty:
+        # Downcast float columns to float32 to reduce memory footprint by ~50%
+        float_cols = data.select_dtypes(include=['float64']).columns
+        data[float_cols] = data[float_cols].astype('float32')
+    return data
+
+# ----------------------------------------------------------------------
+# 4. Main Execution Engine
+# ----------------------------------------------------------------------
 if st.sidebar.button("🚀 Execute Quantitative Analytics", use_container_width=True):
     with st.spinner("Retrieving market data feed, parameterizing models, and performing econometric audit..."):
-        df = fetch_crypto_data(symbol=symbol)
+        
+        # Load Cached Market Data
+        df = load_cached_market_data(symbol)
 
         if df is None or df.empty or len(df) < 30:
             st.error("Error: Insufficient market data returned from data feeds.")
@@ -71,28 +95,33 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", use_container_width=
         # 1. Fit GARCH Baseline
         _, garch_vol = fit_garch_model(df["Log_Return"])
 
-        # Convert garch_vol to pandas Series if it returns as numpy array
         if isinstance(garch_vol, np.ndarray):
-            garch_vol = pd.Series(garch_vol, index=df.index[-len(garch_vol):])
+            garch_vol = pd.Series(garch_vol, index=df.index[-len(garch_vol):], dtype="float32")
+        else:
+            garch_vol = garch_vol.astype("float32")
 
-        # 2. Fit LSTM
+        # 2. Fit LSTM (Guard against memory leaks)
         if HAS_LSTM:
             try:
                 _, lstm_vol = train_lstm_volatility(df["Log_Return"], epochs=int(epochs))
                 if isinstance(lstm_vol, np.ndarray):
-                    lstm_vol = pd.Series(lstm_vol, index=df.index[-len(lstm_vol):])
+                    lstm_vol = pd.Series(lstm_vol, index=df.index[-len(lstm_vol):], dtype="float32")
+                else:
+                    lstm_vol = lstm_vol.astype("float32")
             except Exception as e:
                 st.warning(f"LSTM Training Note: {e}. Utilizing GARCH baseline.")
                 lstm_vol = garch_vol
         else:
             lstm_vol = garch_vol
 
-        # 3. Fit Transformer
+        # 3. Fit Transformer (Guard against memory leaks)
         if HAS_TRANSFORMER:
             try:
                 _, trans_vol = train_transformer_volatility(df["Log_Return"], epochs=int(epochs))
                 if isinstance(trans_vol, np.ndarray):
-                    trans_vol = pd.Series(trans_vol, index=df.index[-len(trans_vol):])
+                    trans_vol = pd.Series(trans_vol, index=df.index[-len(trans_vol):], dtype="float32")
+                else:
+                    trans_vol = trans_vol.astype("float32")
             except Exception as e:
                 st.warning(f"Transformer Training Note: {e}. Utilizing GARCH baseline.")
                 trans_vol = garch_vol
@@ -103,12 +132,12 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", use_container_width=
         min_len = min(len(garch_vol), len(lstm_vol), len(trans_vol))
         plot_dates = df.index[-min_len:]
         
-        garch_series = garch_vol.iloc[-min_len:] * 100
-        lstm_series = lstm_vol.iloc[-min_len:] * 100
-        trans_series = trans_vol.iloc[-min_len:] * 100
+        garch_series = (garch_vol.iloc[-min_len:] * 100).astype("float32")
+        lstm_series = (lstm_vol.iloc[-min_len:] * 100).astype("float32")
+        trans_series = (trans_vol.iloc[-min_len:] * 100).astype("float32")
 
         # Latest Forecast Metrics
-        latest_price = df["Close"].iloc[-1]
+        latest_price = float(df["Close"].iloc[-1])
         latest_garch_vol = float(garch_vol.iloc[-1])
         latest_lstm_vol = float(lstm_vol.iloc[-1]) if HAS_LSTM else latest_garch_vol
         latest_trans_vol = float(trans_vol.iloc[-1]) if HAS_TRANSFORMER else latest_garch_vol
@@ -116,6 +145,9 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", use_container_width=
         risk_summary = calculate_position_size(
             account_balance=capital, predicted_volatility=latest_garch_vol
         )
+
+        # Explicit Garbage Collection to keep RAM < 512 MB
+        gc.collect()
 
         # -------------------------------------------------------------
         # Section 1: Executive Key Metrics Summary
@@ -242,3 +274,6 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", use_container_width=
             )
             fig_pie.update_layout(height=280, margin=dict(l=20, r=20, t=30, b=20))
             st.plotly_chart(fig_pie, use_container_width=True)
+
+        # Final memory purge after rendering charts
+        gc.collect()
