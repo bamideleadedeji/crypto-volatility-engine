@@ -43,6 +43,14 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Initialize Paper Trading Portfolio Memory State
+if "paper_portfolio" not in st.session_state:
+    st.session_state["paper_portfolio"] = {
+        "cash_usd": 10000.0,
+        "positions": {},
+        "trade_history": []
+    }
+
 # Professional Header & Metadata
 st.title("📈 Crypto Volatility Forecasting & Quantitative Risk Suite")
 st.caption("Institutional Multi-Model Benchmarking Engine (GARCH(1,1) vs. LSTM vs. Transformer) with Parametric VaR Risk Targeting")
@@ -67,7 +75,7 @@ st.sidebar.divider()
 st.sidebar.info("💡 **Consultant Note:** Benchmarks econometric time-series against deep learning architectures to optimize risk-weighted position sizing.")
 
 # ----------------------------------------------------------------------
-# 3. Cached Data Fetcher Function (Resolves NameError)
+# 3. Cached Data Fetcher Function
 # ----------------------------------------------------------------------
 @st.cache_data(ttl=900, show_spinner=False)
 def load_cached_market_data(ticker_symbol: str) -> pd.DataFrame:
@@ -81,8 +89,6 @@ def load_cached_market_data(ticker_symbol: str) -> pd.DataFrame:
 # ----------------------------------------------------------------------
 # 4. Main Execution Engine (Session State Persistence)
 # ----------------------------------------------------------------------
-
-# Initialize persistent session memory if not already set
 if "analytics_results" not in st.session_state:
     st.session_state["analytics_results"] = None
 
@@ -104,7 +110,7 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", use_container_width=
         else:
             garch_vol = garch_vol.astype("float32")
 
-        # 2. Fit LSTM (Guard against memory leaks)
+        # 2. Fit LSTM
         if HAS_LSTM:
             try:
                 _, lstm_vol = train_lstm_volatility(df["Log_Return"], epochs=int(epochs))
@@ -118,7 +124,7 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", use_container_width=
         else:
             lstm_vol = garch_vol
 
-        # 3. Fit Transformer (Guard against memory leaks)
+        # 3. Fit Transformer
         if HAS_TRANSFORMER:
             try:
                 _, trans_vol = train_transformer_volatility(df["Log_Return"], epochs=int(epochs))
@@ -150,10 +156,8 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", use_container_width=
             account_balance=capital, predicted_volatility=latest_garch_vol
         )
 
-        # Explicit Garbage Collection
         gc.collect()
 
-        # Save all results into session state so browser reconnects never lose screen data
         st.session_state["analytics_results"] = {
             "df": df,
             "garch_series": garch_series,
@@ -170,7 +174,7 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", use_container_width=
         }
 
 # ----------------------------------------------------------------------
-# 5. Dashboard Rendering (Reads from Persistent Session State)
+# 5. Dashboard Rendering & Paper Trading Simulator
 # ----------------------------------------------------------------------
 if st.session_state["analytics_results"] is not None:
     res = st.session_state["analytics_results"]
@@ -187,9 +191,7 @@ if st.session_state["analytics_results"] is not None:
     current_symbol = res["symbol"]
     current_capital = res["capital"]
 
-    # -------------------------------------------------------------
-    # Section 1: Executive Key Metrics Summary
-    # -------------------------------------------------------------
+    # Section 1: Executive Key Metrics
     st.subheader("📌 Executive Risk & Volatility Dashboard")
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Spot Price", f"${latest_price:,.2f}")
@@ -200,9 +202,7 @@ if st.session_state["analytics_results"] is not None:
 
     st.divider()
 
-    # -------------------------------------------------------------
-    # Section 2: Multi-Model Volatility Benchmark & Analytics
-    # -------------------------------------------------------------
+    # Section 2: Forecast Horizon Plots
     tab_chart, tab_table, tab_stats = st.tabs([
         "📈 Forecast Comparison Plot", 
         "📋 Model Volatility Diagnostics", 
@@ -211,43 +211,17 @@ if st.session_state["analytics_results"] is not None:
 
     with tab_chart:
         fig = go.Figure()
-        fig.add_trace(
-            go.Scatter(
-                x=plot_dates,
-                y=garch_series,
-                name="GARCH(1,1) Econometric",
-                line=dict(color="#1f77b4", width=2.5),
-            )
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=plot_dates,
-                y=lstm_series,
-                name="LSTM Recurrent Net",
-                line=dict(color="#ff7f0e", width=2, dash="dash"),
-            )
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=plot_dates,
-                y=trans_series,
-                name="Transformer Self-Attention",
-                line=dict(color="#2ca02c", width=2, dash="dot"),
-            )
-        )
-
+        fig.add_trace(go.Scatter(x=plot_dates, y=garch_series, name="GARCH(1,1)", line=dict(color="#1f77b4", width=2.5)))
+        fig.add_trace(go.Scatter(x=plot_dates, y=lstm_series, name="LSTM Net", line=dict(color="#ff7f0e", width=2, dash="dash")))
+        fig.add_trace(go.Scatter(x=plot_dates, y=trans_series, name="Transformer", line=dict(color="#2ca02c", width=2, dash="dot")))
         fig.update_layout(
-            title=f"Multi-Model Daily Volatility Forecast Horizon (%) — {current_symbol}",
-            xaxis_title="Timeline",
-            yaxis_title="Annualized/Daily Conditional Volatility (%)",
-            template="plotly_white",
-            height=520,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            title=f"Multi-Model Daily Volatility Horizon (%) — {current_symbol}",
+            xaxis_title="Timeline", yaxis_title="Conditional Volatility (%)",
+            template="plotly_white", height=520
         )
         st.plotly_chart(fig, use_container_width=True)
 
     with tab_table:
-        st.markdown("##### Model Forecast Matrix (Last 15 Trading Sessions)")
         diag_df = pd.DataFrame({
             "Date": plot_dates[-15:].strftime("%Y-%m-%d"),
             "Asset Spot ($)": df["Close"].iloc[-15:].values,
@@ -257,36 +231,22 @@ if st.session_state["analytics_results"] is not None:
             "Transformer Vol (%)": trans_series.iloc[-15:].values
         })
         st.dataframe(diag_df.style.format({
-            "Asset Spot ($)": "${:,.2f}",
-            "Log Return (%)": "{:+.2f}%",
-            "GARCH Vol (%)": "{:.2f}%",
-            "LSTM Vol (%)": "{:.2f}%",
-            "Transformer Vol (%)": "{:.2f}%"
+            "Asset Spot ($)": "${:,.2f}", "Log Return (%)": "{:+.2f}%",
+            "GARCH Vol (%)": "{:.2f}%", "LSTM Vol (%)": "{:.2f}%", "Transformer Vol (%)": "{:.2f}%"
         }), use_container_width=True)
 
     with tab_stats:
-        st.markdown("##### Econometric Distribution & Dispersion Statistics")
         s1, s2, s3 = st.columns(3)
-        with s1:
-            st.markdown("**GARCH Volatility Distribution**")
-            st.write(pd.Series(garch_series).describe().to_frame("GARCH Metrics"))
-        with s2:
-            st.markdown("**LSTM Volatility Distribution**")
-            st.write(pd.Series(lstm_series).describe().to_frame("LSTM Metrics"))
-        with s3:
-            st.markdown("**Transformer Volatility Distribution**")
-            st.write(pd.Series(trans_series).describe().to_frame("Transformer Metrics"))
+        s1.write(pd.Series(garch_series).describe().to_frame("GARCH Metrics"))
+        s2.write(pd.Series(lstm_series).describe().to_frame("LSTM Metrics"))
+        s3.write(pd.Series(trans_series).describe().to_frame("Transformer Metrics"))
 
     st.divider()
 
-    # -------------------------------------------------------------
-    # Section 3: Professional Risk Management Engine
-    # -------------------------------------------------------------
+    # Section 3: Risk Sizing Engine
     st.subheader("🛡️ Executive Risk-Targeted Position Sizing Framework")
     r1, r2 = st.columns([1, 1])
-
     with r1:
-        st.markdown("#### Quantitative Risk Metrics")
         st.write(f"• **Portfolio Capital:** `${current_capital:,.2f}`")
         st.write(f"• **Predicted Daily Volatility:** `{risk_summary.get('predicted_daily_volatility', 'N/A')}`")
         st.write(f"• **1-Day 95% Value-at-Risk (VaR):** `{risk_summary.get('one_day_95pct_VaR', 'N/A')}`")
@@ -294,24 +254,93 @@ if st.session_state["analytics_results"] is not None:
         st.write(f"• **Recommended Allocation Cap:** `{risk_summary.get('recommended_position_usd', 'N/A')}`")
 
     with r2:
-        st.markdown("#### Capital Allocation Breakdown")
         pos_val_str = str(risk_summary.get("recommended_position_usd", "$0")).replace("$", "").replace(",", "")
         try:
             rec_pos_val = float(pos_val_str)
         except Exception:
             rec_pos_val = current_capital * 0.2
-        
         cash_val = max(0.0, current_capital - rec_pos_val)
-        alloc_df = pd.DataFrame({
-            "Category": ["Target Position Allocation", "Unallocated Risk Buffer"],
-            "Amount ($)": [rec_pos_val, cash_val]
-        })
-        fig_pie = px.pie(
-            alloc_df, values="Amount ($)", names="Category", 
-            hole=0.4, color_discrete_sequence=["#1f77b4", "#e377c2"]
-        )
+        alloc_df = pd.DataFrame({"Category": ["Target Position", "Risk Buffer"], "Amount ($)": [rec_pos_val, cash_val]})
+        fig_pie = px.pie(alloc_df, values="Amount ($)", names="Category", hole=0.4)
         fig_pie.update_layout(height=280, margin=dict(l=20, r=20, t=30, b=20))
         st.plotly_chart(fig_pie, use_container_width=True)
 
-    # Final memory purge after rendering
+    # -------------------------------------------------------------
+    # Section 4: Live Paper Execution Panel
+    # -------------------------------------------------------------
+    st.divider()
+    st.subheader("⚡ Live Risk-Engineered Paper Execution Panel")
+    
+    portfolio = st.session_state["paper_portfolio"]
+    
+    p1, p2, p3 = st.columns(3)
+    p1.metric("Available Virtual Cash", f"${portfolio['cash_usd']:,.2f}")
+    
+    open_position_val = sum(
+        pos["units"] * latest_price 
+        for sym, pos in portfolio["positions"].items() if sym == current_symbol
+    )
+    p2.metric(f"Open Position Value ({current_symbol})", f"${open_position_val:,.2f}")
+    
+    total_portfolio_val = portfolio["cash_usd"] + open_position_val
+    p3.metric("Total Account Equity", f"${total_portfolio_val:,.2f}")
+
+    col_buy, col_sell = st.columns(2)
+
+    with col_buy:
+        rec_allocation_usd = float(str(risk_summary.get("recommended_position_usd", "$0")).replace("$", "").replace(",", ""))
+        st.markdown(f"**Target Recommended Allocation:** `${rec_allocation_usd:,.2f}`")
+        if st.button(f"📥 Execute VaR-Sized BUY ({current_symbol})", use_container_width=True):
+            if rec_allocation_usd <= 0 or rec_allocation_usd > portfolio["cash_usd"]:
+                st.error("Insufficient virtual cash buffer to execute target size.")
+            else:
+                units_to_buy = rec_allocation_usd / latest_price
+                portfolio["cash_usd"] -= rec_allocation_usd
+                
+                if current_symbol in portfolio["positions"]:
+                    existing = portfolio["positions"][current_symbol]
+                    total_units = existing["units"] + units_to_buy
+                    avg_entry = ((existing["units"] * existing["entry_price"]) + rec_allocation_usd) / total_units
+                    portfolio["positions"][current_symbol] = {"units": total_units, "entry_price": avg_entry}
+                else:
+                    portfolio["positions"][current_symbol] = {"units": units_to_buy, "entry_price": latest_price}
+
+                portfolio["trade_history"].append({
+                    "Timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "Type": "BUY",
+                    "Asset": current_symbol,
+                    "Price": latest_price,
+                    "Amount ($)": rec_allocation_usd,
+                    "Units": units_to_buy
+                })
+                st.success(f"Executed BUY order for {units_to_buy:.4f} {current_symbol} at ${latest_price:,.2f}")
+                st.rerun()
+
+    with col_sell:
+        has_position = current_symbol in portfolio["positions"] and portfolio["positions"][current_symbol]["units"] > 0
+        st.markdown(f"**Current Asset Holdings:** `{portfolio['positions'].get(current_symbol, {}).get('units', 0.0):.4f} {current_symbol}`")
+        
+        if st.button(f"📤 Liquidate Position (SELL ALL)", use_container_width=True, disabled=not has_position):
+            pos_data = portfolio["positions"].pop(current_symbol)
+            sell_value_usd = pos_data["units"] * latest_price
+            portfolio["cash_usd"] += sell_value_usd
+            
+            pnl_usd = sell_value_usd - (pos_data["units"] * pos_data["entry_price"])
+            
+            portfolio["trade_history"].append({
+                "Timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "Type": "SELL",
+                "Asset": current_symbol,
+                "Price": latest_price,
+                "Amount ($)": sell_value_usd,
+                "Realized P&L ($)": pnl_usd
+            })
+            st.success(f"Liquidated position for ${sell_value_usd:,.2f} (Realized P&L:${pnl_usd:+,.2f})")
+            st.rerun()
+
+    if portfolio["trade_history"]:
+        with st.expander("📜 Virtual Execution Audit Trail & Order History"):
+            trade_df = pd.DataFrame(portfolio["trade_history"])
+            st.dataframe(trade_df, use_container_width=True)
+
     gc.collect()
