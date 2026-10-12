@@ -31,7 +31,7 @@ def fetch_crypto_data(symbol="BTC-USD", period="1y"):
     Fetches spot market data with robust fallbacks:
     Tier 1: CoinGecko API (Resilient Session)
     Tier 2: Yahoo Finance REST API Direct Fallback
-    Tier 3: Coinbase Public Rest API
+    Tier 3: Coinbase Public REST API Fallback
 
     Optimized for Render Cloud IPs & 512MB RAM Limit.
     """
@@ -108,7 +108,6 @@ def fetch_crypto_data(symbol="BTC-USD", period="1y"):
             if res.status_code == 200:
                 candles = res.json()
                 if isinstance(candles, list) and len(candles) > 30:
-                    # Coinbase returns: [time, low, high, open, close, volume]
                     df = pd.DataFrame(candles, columns=["time", "low", "high", "open", "close", "volume"])
                     df["Timestamp"] = pd.to_datetime(df["time"], unit="s")
                     df.rename(columns={"close": "Close"}, inplace=True)
@@ -125,7 +124,7 @@ def fetch_crypto_data(symbol="BTC-USD", period="1y"):
         st.error(f"Error: Unable to pull market data for {symbol}. Public exchange feeds blocked the cloud IP.")
         return pd.DataFrame()
 
-    # Memory downcasting
+    # Memory downcasting to float32
     df["Close"] = df["Close"].astype("float32")
     df["Log_Return"] = np.log(df["Close"] / df["Close"].shift(1)).astype("float32")
     df.dropna(subset=["Log_Return"], inplace=True)
