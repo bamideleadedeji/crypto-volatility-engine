@@ -67,8 +67,19 @@ st.sidebar.divider()
 st.sidebar.info("💡 **Consultant Note:** Benchmarks econometric time-series against deep learning architectures to optimize risk-weighted position sizing.")
 
 # ----------------------------------------------------------------------
+# 3. Cached Data Fetcher Function (Resolves NameError)
 # ----------------------------------------------------------------------
-# 4. Main Execution Engine (Session State Guarded against Blank Screens)
+@st.cache_data(ttl=900, show_spinner=False)
+def load_cached_market_data(ticker_symbol: str) -> pd.DataFrame:
+    """Fetches market data with a 15-minute TTL cache to avoid hitting API rate limits."""
+    data = fetch_crypto_data(symbol=ticker_symbol)
+    if data is not None and not data.empty:
+        float_cols = data.select_dtypes(include=['float64']).columns
+        data[float_cols] = data[float_cols].astype('float32')
+    return data
+
+# ----------------------------------------------------------------------
+# 4. Main Execution Engine (Session State Persistence)
 # ----------------------------------------------------------------------
 
 # Initialize persistent session memory if not already set
@@ -139,7 +150,7 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", use_container_width=
             account_balance=capital, predicted_volatility=latest_garch_vol
         )
 
-        # Explicit Garbage Collection to keep RAM < 512 MB
+        # Explicit Garbage Collection
         gc.collect()
 
         # Save all results into session state so browser reconnects never lose screen data
