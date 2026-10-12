@@ -1,4 +1,5 @@
 import gc
+import random
 import numpy as np
 import pandas as pd
 import torch
@@ -7,6 +8,18 @@ from sklearn.preprocessing import StandardScaler
 
 # Enforce single-threaded CPU execution to eliminate thread overhead on Render
 torch.set_num_threads(1)
+
+
+def set_deterministic_seed(seed: int = 42):
+    """
+    Locks random seeds across Python, NumPy, and PyTorch for 100% reproducible results
+    across different hosting environments (Render vs. Streamlit Cloud).
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 class LightweightLSTMVolatilityModel(nn.Module):
@@ -41,11 +54,15 @@ def train_lstm_volatility(
     returns: pd.Series, seq_length: int = 15, epochs: int = 15
 ):
     """
-    Trains a lightweight LSTM model on absolute returns.
+    Trains a lightweight LSTM model on absolute returns with deterministic seed locking.
     
     NOTE: Removed @st.cache_resource to prevent PyTorch model objects 
     and backprop tensors from leaking RAM across Streamlit re-runs.
     """
+    # 1. Enforce strict seed reproducibility at the start of execution
+    set_deterministic_seed(42)
+
+    # 2. Extract volatility proxy
     vol_proxy = np.abs(returns.values).astype(np.float32).reshape(-1, 1)
 
     scaler = StandardScaler()
