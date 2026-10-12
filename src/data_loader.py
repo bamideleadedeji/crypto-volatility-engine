@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-import ccxt
 import requests
 import streamlit as st
 import time
@@ -9,123 +8,124 @@ from urllib3.util import Retry
 
 
 def get_resilient_session():
-    """Configures a requests session with exponential backoff retries for status code 429."""
+    """Configures an HTTP session with retry backoff and custom headers to bypass cloud IP blocks."""
     session = requests.Session()
     retries = Retry(
         total=3,
-        backoff_factor=2,  # Retries after 2s, 4s, 8s
+        backoff_factor=1.5,
         status_forcelist=[429, 500, 502, 503, 504],
         raise_on_status=False
     )
     adapter = HTTPAdapter(max_retries=retries)
     session.mount("https://", adapter)
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json"
+    })
     return session
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False)
 def fetch_crypto_data(symbol="BTC-USD", period="1y"):
     """
-    Fetches real-time market data from exchange APIs:
-    Tier 1: Coinbase Public API (CCXT)
-    Tier 2: Kraken Public Spot API (CCXT Fallback)
-    Tier 3: CoinGecko Public REST API (Resilient Session Fallback)
+    Fetches spot market data with robust fallbacks:
+    Tier 1: CoinGecko API (Resilient Session)
+    Tier 2: Yahoo Finance REST API Direct Fallback
+    Tier 3: Coinbase Public Rest API
 
-    Memory-Optimized for Render Free Tier (512MB RAM Limit).
+    Optimized for Render Cloud IPs & 512MB RAM Limit.
     """
     df = pd.DataFrame()
+    session = get_resilient_session()
 
-    # Normalize Pair Syntax (e.g., BTC-USD -> BTC/USD)
     base_asset = symbol.split("-")[0] if "-" in symbol else symbol.replace("USD", "")
-    ccxt_symbol = f"{base_asset}/USD"
-
-    # Limit to 365 days (sufficient statistical depth while saving 50% RAM)
-    historical_limit = 365
+    
+    # Mapping for CoinGecko
+    coin_map = {
+        "BTC": "bitcoin",
+        "ETH": "ethereum",
+        "SOL": "solana",
+        "BNB": "binancecoin",
+        "XRP": "ripple",
+    }
+    cg_id = coin_map.get(base_asset.upper(), "bitcoin")
 
     # ==========================================
-    # Tier 1: Coinbase Public API via CCXT
+    # Tier 1: CoinGecko Public Market Chart REST API
     # ==========================================
     try:
-        exchange_cb = ccxt.coinbase({
-            "enableRateLimit": True,
-            "timeout": 10000,
-        })
-        ohlcv = exchange_cb.fetch_ohlcv(ccxt_symbol, timeframe="1d", limit=historical_limit)
+        url = f"https://api.coingecko.com/api/v3/coins/{cg_id}/market_chart?vs_currency=usd&days=365&interval=daily"
+        res = session.get(url, timeout=10)
 
-        if ohlcv and len(ohlcv) > 30:
-            df = pd.DataFrame(
-                ohlcv, 
-                columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"]
-            )
-            df["Timestamp"] = pd.to_datetime(df["Timestamp"], unit="ms")
-            df.set_index("Timestamp", inplace=True)
+        if res.status_code == 200:
+            data = res.json()
+            prices = data.get("prices", [])
+            if len(prices) > 30:
+                df = pd.DataFrame(prices, columns=["Timestamp", "Close"])
+                df["Timestamp"] = pd.to_datetime(df["Timestamp"], unit="ms")
+                df.set_index("Timestamp", inplace=True)
     except Exception as e:
-        print(f"Coinbase API Fetch Exception for {ccxt_symbol}: {e}")
+        print(f"Tier 1 CoinGecko Fetch Exception: {e}")
         df = pd.DataFrame()
 
     # ==========================================
-    # Tier 2: Kraken Public API Fallback
+    # Tier 2: Yahoo Finance Direct REST Fallback
     # ==========================================
     if df is None or df.empty or len(df) < 30:
-        print(f"Coinbase feed offline. Attempting Kraken API for {ccxt_symbol}...")
+        print(f"Tier 1 failed. Attempting Tier 2 Yahoo Finance REST API for {symbol}...")
         try:
-            exchange_kraken = ccxt.kraken({
-                "enableRateLimit": True,
-                "timeout": 10000,
-            })
-            ohlcv_k = exchange_kraken.fetch_ohlcv(ccxt_symbol, timeframe="1d", limit=historical_limit)
-
-            if ohlcv_k and len(ohlcv_k) > 30:
-                df = pd.DataFrame(
-                    ohlcv_k, 
-                    columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"]
-                )
-                df["Timestamp"] = pd.to_datetime(df["Timestamp"], unit="ms")
-                df.set_index("Timestamp", inplace=True)
-        except Exception as ex:
-            print(f"Kraken API Fetch Exception: {ex}")
-            df = pd.DataFrame()
-
-    # ==========================================
-    # Tier 3: CoinGecko REST Fallback (Resilient Session)
-    # ==========================================
-    if df is None or df.empty or len(df) < 30:
-        print(f"CCXT feeds offline. Attempting CoinGecko REST Fallback for {base_asset}...")
-        try:
-            coin_map = {
-                "BTC": "bitcoin",
-                "ETH": "ethereum",
-                "SOL": "solana",
-                "BNB": "binancecoin",
-                "XRP": "ripple",
-            }
-            cg_id = coin_map.get(base_asset.upper(), "bitcoin")
-            url = f"https://api.coingecko.com/api/v3/coins/{cg_id}/market_chart?vs_currency=usd&days=365&interval=daily"
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
+            yf_symbol = f"{base_asset}-USD"
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_symbol}?range=1y&interval=1d"
+            res = session.get(url, timeout=10)
             
-            session = get_resilient_session()
-            res = session.get(url, headers=headers, timeout=12)
-
             if res.status_code == 200:
-                data = res.json()
-                prices = data.get("prices", [])
-                if len(prices) > 30:
-                    df = pd.DataFrame(prices, columns=["Timestamp", "Close"])
-                    df["Timestamp"] = pd.to_datetime(df["Timestamp"], unit="ms")
-                    df.set_index("Timestamp", inplace=True)
-        except Exception as cg_err:
-            print(f"CoinGecko API Fetch Exception: {cg_err}")
+                json_data = res.json()
+                result = json_data.get("chart", {}).get("result", [])
+                if result:
+                    timestamps = result[0].get("timestamp", [])
+                    quote = result[0].get("indicators", {}).get("quote", [{}])[0]
+                    closes = quote.get("close", [])
+                    
+                    if len(closes) > 30:
+                        df = pd.DataFrame({"Timestamp": timestamps, "Close": closes})
+                        df.dropna(subset=["Close"], inplace=True)
+                        df["Timestamp"] = pd.to_datetime(df["Timestamp"], unit="s")
+                        df.set_index("Timestamp", inplace=True)
+        except Exception as ex:
+            print(f"Tier 2 Yahoo Finance Exception: {ex}")
             df = pd.DataFrame()
 
     # ==========================================
-    # Final Validation & Downcasting Optimization
+    # Tier 3: Coinbase Direct Spot API Fallback
+    # ==========================================
+    if df is None or df.empty or len(df) < 30:
+        print(f"Tier 2 failed. Attempting Tier 3 Coinbase Direct REST API for {base_asset}-USD...")
+        try:
+            cb_pair = f"{base_asset}-USD"
+            url = f"https://api.exchange.coinbase.com/products/{cb_pair}/candles?granularity=86400"
+            res = session.get(url, timeout=10)
+            
+            if res.status_code == 200:
+                candles = res.json()
+                if isinstance(candles, list) and len(candles) > 30:
+                    # Coinbase returns: [time, low, high, open, close, volume]
+                    df = pd.DataFrame(candles, columns=["time", "low", "high", "open", "close", "volume"])
+                    df["Timestamp"] = pd.to_datetime(df["time"], unit="s")
+                    df.rename(columns={"close": "Close"}, inplace=True)
+                    df.set_index("Timestamp", inplace=True)
+                    df.sort_index(inplace=True)
+        except Exception as cb_err:
+            print(f"Tier 3 Coinbase Exception: {cb_err}")
+            df = pd.DataFrame()
+
+    # ==========================================
+    # Validation & Memory Optimization
     # ==========================================
     if df.empty or "Close" not in df.columns or len(df) < 30:
-        st.error(f"Error: Live market feeds for {symbol} are temporarily unreachable. Please retry in a few moments.")
+        st.error(f"Error: Unable to pull market data for {symbol}. Public exchange feeds blocked the cloud IP.")
         return pd.DataFrame()
 
-    # Downcast floats to float32 to enforce strict RAM ceiling
+    # Memory downcasting
     df["Close"] = df["Close"].astype("float32")
     df["Log_Return"] = np.log(df["Close"] / df["Close"].shift(1)).astype("float32")
     df.dropna(subset=["Log_Return"], inplace=True)
