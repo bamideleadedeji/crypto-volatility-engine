@@ -33,6 +33,13 @@ try:
 except Exception:
     HAS_TRANSFORMER = False
 
+# Safe import for Bybit Testnet Execution Engine
+try:
+    from src.bybit_execution import execute_bybit_testnet_order
+    HAS_BYBIT_EXEC = True
+except Exception:
+    HAS_BYBIT_EXEC = False
+
 # ----------------------------------------------------------------------
 # 2. Page Configuration & Theme Setup
 # ----------------------------------------------------------------------
@@ -271,11 +278,11 @@ if st.session_state["analytics_results"] is not None:
     st.divider()
     st.subheader("⚡ Live Risk-Engineered Execution Panel")
     
-    # 1. Fetch Bybit Credentials from Render Environment Variables
+    # Fetch Bybit Credentials from Render Environment Variables
     bybit_key = os.environ.get("BYBIT_TESTNET_KEY")
     bybit_secret = os.environ.get("BYBIT_TESTNET_SECRET")
 
-    # 2. Execution Mode Selection Toggle
+    # Execution Mode Selection Toggle
     execution_mode = st.radio(
         "Select Execution Venue:",
         ["Virtual Paper Trading (Local)", "Bybit Testnet API (Live Sandbox)"],
@@ -309,8 +316,33 @@ if st.session_state["analytics_results"] is not None:
             if execution_mode == "Bybit Testnet API (Live Sandbox)":
                 if not bybit_key or not bybit_secret:
                     st.error("❌ Bybit Testnet keys not found in Render Environment Variables.")
+                elif not HAS_BYBIT_EXEC:
+                    st.error("❌ `src/bybit_execution.py` module not found or failed to load.")
                 else:
-                    st.info("🚀 Transmitting VaR-sized order to Bybit V5 Testnet API...")
+                    with st.spinner("🚀 Transmitting VaR-sized order to Bybit V5 Testnet API..."):
+                        exec_res = execute_bybit_testnet_order(
+                            api_key=bybit_key,
+                            api_secret=bybit_secret,
+                            symbol=current_symbol,
+                            amount_usd=rec_allocation_usd,
+                            current_price=latest_price,
+                            side="buy"
+                        )
+                        
+                        if exec_res["status"] == "SUCCESS":
+                            st.success(f"✅ Bybit Testnet Order Placed! Order ID: `{exec_res['order_id']}`")
+                            
+                            portfolio["trade_history"].append({
+                                "Timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "Type": "BUY (Bybit Testnet)",
+                                "Asset": current_symbol,
+                                "Price": latest_price,
+                                "Amount ($)": rec_allocation_usd,
+                                "Units": exec_res["filled_units"]
+                            })
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Bybit Execution Failed: {exec_res['message']}")
             else:
                 if rec_allocation_usd <= 0 or rec_allocation_usd > portfolio["cash_usd"]:
                     st.error("Insufficient virtual cash buffer to execute target size.")
@@ -328,7 +360,7 @@ if st.session_state["analytics_results"] is not None:
 
                     portfolio["trade_history"].append({
                         "Timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Type": "BUY",
+                        "Type": "BUY (Paper)",
                         "Asset": current_symbol,
                         "Price": latest_price,
                         "Amount ($)": rec_allocation_usd,
