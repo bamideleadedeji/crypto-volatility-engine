@@ -1,12 +1,12 @@
 import os
 import gc
 
-# Disable Matplotlib font cache building on cold boot
+# 1. Disable Matplotlib font cache building on cold boot
 os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib_cache"
 import matplotlib
 matplotlib.use("Agg")
 
-# Threading & Memory Guards for Render Free Tier (512MB RAM Limit)
+# 2. Threading & Memory Guards for Render Free Tier (512MB RAM Limit)
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 import torch
@@ -306,7 +306,7 @@ if st.session_state["analytics_results"] is not None:
 
     col_buy, col_sell = st.columns(2)
 
-    # BUY ORDER ROUTING
+    # BUY ORDER ROUTING (NO RERUN LOOP)
     with col_buy:
         rec_allocation_usd = float(str(risk_summary.get("recommended_position_usd", "$0")).replace("$", "").replace(",", ""))
         st.markdown(f"**Target Recommended Allocation:** `${rec_allocation_usd:,.2f}`")
@@ -330,16 +330,14 @@ if st.session_state["analytics_results"] is not None:
                         
                         if exec_res["status"] == "SUCCESS":
                             st.success(f"✅ Bybit Testnet Order Placed! Order ID: `{exec_res['order_id']}`")
-                            
                             portfolio["trade_history"].append({
                                 "Timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
                                 "Type": "BUY (Bybit Testnet)",
                                 "Asset": current_symbol,
                                 "Price": latest_price,
                                 "Amount ($)": rec_allocation_usd,
-                                "Units": exec_res["filled_units"]
+                                "Units": exec_res.get("filled_units", rec_allocation_usd / latest_price)
                             })
-                            st.rerun()
                         else:
                             st.error(f"❌ Bybit Execution Failed: {exec_res['message']}")
             else:
@@ -366,9 +364,8 @@ if st.session_state["analytics_results"] is not None:
                         "Units": units_to_buy
                     })
                     st.success(f"Executed BUY order for {units_to_buy:.4f} {current_symbol} at ${latest_price:,.2f}")
-                    st.rerun()
 
-    # SELL ORDER ROUTING
+    # SELL ORDER ROUTING (NO RERUN LOOP)
     with col_sell:
         has_position = current_symbol in portfolio["positions"] and portfolio["positions"][current_symbol]["units"] > 0
         st.markdown(f"**Current Asset Holdings:** `{portfolio['positions'].get(current_symbol, {}).get('units', 0.0):.4f} {current_symbol}`")
@@ -389,7 +386,6 @@ if st.session_state["analytics_results"] is not None:
                 "Realized P&L ($)": pnl_usd
             })
             st.success(f"Liquidated position for ${sell_value_usd:,.2f} (Realized P&L:${pnl_usd:+,.2f})")
-            st.rerun()
 
     if portfolio["trade_history"]:
         with st.expander("📜 Virtual Execution Audit Trail & Order History"):
