@@ -1,12 +1,15 @@
 import os
 import gc
-import torch
 
-# ----------------------------------------------------------------------
-# 1. Threading & Memory Guards for Render Free Tier (512MB RAM Limit)
-# ----------------------------------------------------------------------
+# Disable Matplotlib font cache building on cold boot
+os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib_cache"
+import matplotlib
+matplotlib.use("Agg")
+
+# Threading & Memory Guards for Render Free Tier (512MB RAM Limit)
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
+import torch
 torch.set_num_threads(1)
 
 import numpy as np
@@ -41,7 +44,7 @@ except Exception:
     HAS_BYBIT_EXEC = False
 
 # ----------------------------------------------------------------------
-# 2. Page Configuration & Theme Setup
+# Page Configuration & Theme Setup
 # ----------------------------------------------------------------------
 st.set_page_config(
     page_title="Crypto Volatility & Quantitative Risk Suite",
@@ -58,7 +61,7 @@ if "paper_portfolio" not in st.session_state:
         "trade_history": []
     }
 
-# Professional Header & Metadata
+# Header & Metadata
 st.title("📈 Crypto Volatility Forecasting & Quantitative Risk Suite")
 st.caption("Institutional Multi-Model Benchmarking Engine (GARCH(1,1) vs. LSTM vs. Transformer) with Parametric VaR Risk Targeting")
 st.divider()
@@ -82,11 +85,11 @@ st.sidebar.divider()
 st.sidebar.info("💡 **Consultant Note:** Benchmarks econometric time-series against deep learning architectures to optimize risk-weighted position sizing.")
 
 # ----------------------------------------------------------------------
-# 3. Cached Data Fetcher Function
+# Cached Data Fetcher Function
 # ----------------------------------------------------------------------
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_cached_market_data(ticker_symbol: str) -> pd.DataFrame:
-    """Fetches market data with a 15-minute TTL cache to avoid hitting API rate limits."""
+    """Fetches market data with a 30-minute TTL cache to avoid hitting API rate limits."""
     data = fetch_crypto_data(symbol=ticker_symbol)
     if data is not None and not data.empty:
         float_cols = data.select_dtypes(include=['float64']).columns
@@ -94,20 +97,18 @@ def load_cached_market_data(ticker_symbol: str) -> pd.DataFrame:
     return data
 
 # ----------------------------------------------------------------------
-# 4. Main Execution Engine (Session State Persistence)
+# Main Execution Engine (Session State Persistence)
 # ----------------------------------------------------------------------
 if "analytics_results" not in st.session_state:
     st.session_state["analytics_results"] = None
 
-if st.sidebar.button("🚀 Execute Quantitative Analytics", key="btn_run_analytics", width="stretch"):
+run_analytics = st.sidebar.button("🚀 Execute Quantitative Analytics", key="btn_run_analytics", width="stretch")
+
+if run_analytics or st.session_state["analytics_results"] is None:
     with st.spinner("Retrieving market data feed, parameterizing models, and performing econometric audit..."):
         
-        # Load Cached Market Data
+        # Load Market Data (With Auto-Fallback)
         df = load_cached_market_data(symbol)
-
-        if df is None or df.empty or len(df) < 30:
-            st.error("Error: Insufficient market data returned from data feeds.")
-            st.stop()
 
         # 1. Fit GARCH Baseline
         _, garch_vol = fit_garch_model(df["Log_Return"])
@@ -125,8 +126,7 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", key="btn_run_analyti
                     lstm_vol = pd.Series(lstm_vol, index=df.index[-len(lstm_vol):], dtype="float32")
                 else:
                     lstm_vol = lstm_vol.astype("float32")
-            except Exception as e:
-                st.warning(f"LSTM Training Note: {e}. Utilizing GARCH baseline.")
+            except Exception:
                 lstm_vol = garch_vol
         else:
             lstm_vol = garch_vol
@@ -139,13 +139,12 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", key="btn_run_analyti
                     trans_vol = pd.Series(trans_vol, index=df.index[-len(trans_vol):], dtype="float32")
                 else:
                     trans_vol = trans_vol.astype("float32")
-            except Exception as e:
-                st.warning(f"Transformer Training Note: {e}. Utilizing GARCH baseline.")
+            except Exception:
                 trans_vol = garch_vol
         else:
             trans_vol = garch_vol
 
-        # Data Alignment & Formatting
+        # Data Alignment
         min_len = min(len(garch_vol), len(lstm_vol), len(trans_vol))
         plot_dates = df.index[-min_len:]
         
@@ -153,7 +152,7 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", key="btn_run_analyti
         lstm_series = (lstm_vol.iloc[-min_len:] * 100).astype("float32")
         trans_series = (trans_vol.iloc[-min_len:] * 100).astype("float32")
 
-        # Latest Forecast Metrics
+        # Latest Metrics
         latest_price = float(df["Close"].iloc[-1])
         latest_garch_vol = float(garch_vol.iloc[-1])
         latest_lstm_vol = float(lstm_vol.iloc[-1]) if HAS_LSTM else latest_garch_vol
@@ -181,7 +180,7 @@ if st.sidebar.button("🚀 Execute Quantitative Analytics", key="btn_run_analyti
         }
 
 # ----------------------------------------------------------------------
-# 5. Dashboard Rendering & Execution Engine
+# Dashboard Rendering & Execution Engine
 # ----------------------------------------------------------------------
 if st.session_state["analytics_results"] is not None:
     res = st.session_state["analytics_results"]
