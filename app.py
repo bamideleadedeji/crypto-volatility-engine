@@ -393,3 +393,71 @@ if st.session_state["analytics_results"] is not None:
             st.dataframe(trade_df, width="stretch")
 
     gc.collect()
+
+# ==============================================================================
+# SECTION: HISTORICAL VaR BACKTESTING & PERFORMANCE AUDIT MODULE
+# ==============================================================================
+import streamlit as st
+import pandas as pd
+
+try:
+    from src.backtester import run_var_backtest
+except ImportError:
+    run_var_backtest = None
+
+st.markdown("---")
+st.header("📈 Historical VaR Backtesting & Performance Audit Module")
+
+if run_var_backtest is None:
+    st.error("⚠️ Module `src/backtester.py` not found.")
+else:
+    with st.expander("🛠️ Backtest Configuration & Controls", expanded=True):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            bt_capital = st.number_input("Initial Capital ($)", value=10000.0, step=1000.0)
+        with col2:
+            bt_confidence = st.selectbox("VaR Confidence Level", [0.95, 0.99], index=0)
+        with col3:
+            bt_risk_pct = st.slider("Max Daily Risk Exposure (%)", 0.01, 0.05, 0.02, 0.005)
+
+    if st.button("🚀 Run Backtest Analysis", type="primary"):
+        if 'df_market' in st.session_state and not st.session_state['df_market'].empty:
+            df_input = st.session_state['df_market']
+        else:
+            df_input = None
+
+        if df_input is None:
+            st.warning("⚠️ Please load market data first in the main dashboard.")
+        else:
+            with st.spinner("Executing historical backtest..."):
+                results = run_var_backtest(
+                    df=df_input,
+                    initial_capital=bt_capital,
+                    confidence_level=bt_confidence,
+                    max_risk_pct=bt_risk_pct
+                )
+
+            if results.get("status") == "SUCCESS":
+                st.success("✅ Backtest Analysis Completed!")
+
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Strategy Final Capital", f"${results['final_strategy_equity']:,}", f"{results['strategy_total_return_pct']}%")
+                m2.metric("Buy & Hold Capital", f"${results['final_bh_equity']:,}", f"{results['buy_hold_total_return_pct']}%")
+                m3.metric("Sharpe Ratio", f"{results['strategy_sharpe']}")
+                m4.metric("Max Drawdown", f"{results['strategy_max_drawdown_pct']}%")
+
+                st.subheader("📊 Equity Curve: VaR Strategy vs. Buy & Hold")
+                st.line_chart(results["backtest_df"][['Strategy_Equity', 'Buy_Hold_Equity']])
+
+                st.info(
+                    f"🛡️ **VaR Model Audit:** Observed **{results['var_breaches']} breaches** "
+                    f"out of {results['total_periods_tested']} periods."
+                )
+
+                csv_bytes = results["backtest_df"].to_csv().encode('utf-8')
+                st.download_button(
+                    label="📥 Download Backtest Audit Report (CSV)",
+                    data=csv_bytes,
+                    file_name="var_backtest_audit_report.csv",
+                    mime="text/csv"
+                )
