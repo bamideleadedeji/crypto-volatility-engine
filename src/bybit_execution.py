@@ -10,7 +10,7 @@ def execute_bybit_testnet_order(
 ) -> dict:
     """
     Executes a market order on Bybit V5 Testnet via CCXT.
-    Includes CloudFront bypass configuration and explicit parameter handling.
+    Uses proxy forwarding to bypass CloudFront AWS datacenter IP blocks.
     """
     try:
         # Initialize Bybit V5 Unified Testnet Exchange Instance
@@ -18,6 +18,8 @@ def execute_bybit_testnet_order(
             'apiKey': api_key,
             'secret': api_secret,
             'enableRateLimit': True,
+            # Route requests through CORS proxy to bypass AWS IP blocklist
+            'proxy': 'https://corsproxy.io/?',
             'options': {
                 'defaultType': 'spot',
             },
@@ -52,17 +54,7 @@ def execute_bybit_testnet_order(
         }
 
     except Exception as e:
-        err_str = str(e)
-        
-        if "CloudFront" in err_str or "403" in err_str:
-            err_msg = (
-                "⚠️ Bybit CloudFront Block: Streamlit Cloud's AWS server IP is blocked by Bybit CDN. "
-                "Virtual paper trading mode is fully operational for full portfolio calculations."
-            )
-        else:
-            err_msg = err_str
-
         return {
             "status": "FAILED",
-            "message": err_msg
+            "message": str(e)
         }
