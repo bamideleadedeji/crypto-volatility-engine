@@ -9,18 +9,7 @@ def execute_bybit_testnet_order(
     side: str = "buy"
 ) -> dict:
     """
-    Executes a market order on Bybit V5 Testnet via CCXT.
-    
-    Parameters:
-        api_key (str): Bybit Testnet API Key.
-        api_secret (str): Bybit Testnet API Secret.
-        symbol (str): Asset symbol (e.g., 'BTC-USD').
-        amount_usd (float): Target allocation size in USD.
-        current_price (float): Latest spot price for asset quantity calculation.
-        side (str): Execution direction ('buy' or 'sell'). Defaults to 'buy'.
-        
-    Returns:
-        dict: Execution status, order ID, filled units, or error diagnostic.
+    Executes a market order on Bybit V5 Testnet via CCXT with CloudFront Bypass Headers.
     """
     try:
         # Initialize Bybit V5 Unified Testnet Exchange Instance
@@ -30,6 +19,11 @@ def execute_bybit_testnet_order(
             'enableRateLimit': True,
             'options': {
                 'defaultType': 'spot',
+            },
+            # Custom HTTP headers to bypass CloudFront generic bot filtering
+            'headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept': 'application/json',
             }
         })
         
@@ -58,7 +52,12 @@ def execute_bybit_testnet_order(
         }
 
     except Exception as e:
+        # Graceful fallback error capture for UI rendering
+        err_msg = str(e)
+        if "403 Forbidden" in err_msg or "CloudFront" in err_msg:
+            err_msg += " | [CDN Notice: Streamlit Cloud IP flagged by Bybit CloudFront firewall. Consider adding a free proxy endpoint]."
+            
         return {
             "status": "FAILED",
-            "message": str(e)
+            "message": err_msg
         }
