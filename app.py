@@ -1,17 +1,29 @@
+import sys
 import os
-import gc
 
-# 1. Disable Matplotlib font cache building on cold boot
+# ----------------------------------------------------------------------
+# 0. Global Path & Environment Configuration (Must execute first)
+# ----------------------------------------------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SRC_DIR = os.path.join(BASE_DIR, "src")
+
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
+
+# Disable Matplotlib font cache building on cold boot
 os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib_cache"
 import matplotlib
 matplotlib.use("Agg")
 
-# 2. Threading & Memory Guards for Render Free Tier (512MB RAM Limit)
+# Threading & Memory Guards for Cloud Containers
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 import torch
 torch.set_num_threads(1)
 
+import gc
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -21,6 +33,15 @@ import streamlit as st
 from src.data_loader import fetch_crypto_data
 from src.garch_model import fit_garch_model
 from src.risk_engine import calculate_position_size
+
+# Safe import for Backtester Module
+try:
+    from backtester import run_var_backtest
+except ImportError:
+    try:
+        from src.backtester import run_var_backtest
+    except ImportError:
+        run_var_backtest = None
 
 # Safe import for LSTM model
 try:
@@ -102,7 +123,7 @@ def load_cached_market_data(ticker_symbol: str) -> pd.DataFrame:
 if "analytics_results" not in st.session_state:
     st.session_state["analytics_results"] = None
 
-run_analytics = st.sidebar.button("🚀 Execute Quantitative Analytics", key="btn_run_analytics", width="stretch")
+run_analytics = st.sidebar.button("🚀 Execute Quantitative Analytics", key="btn_run_analytics", use_container_width=True)
 
 if run_analytics or st.session_state["analytics_results"] is None:
     with st.spinner("Retrieving market data feed, parameterizing models, and performing econometric audit..."):
@@ -225,7 +246,7 @@ if st.session_state["analytics_results"] is not None:
             xaxis_title="Timeline", yaxis_title="Conditional Volatility (%)",
             template="plotly_white", height=520
         )
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
     with tab_table:
         diag_df = pd.DataFrame({
@@ -239,7 +260,7 @@ if st.session_state["analytics_results"] is not None:
         st.dataframe(diag_df.style.format({
             "Asset Spot ($)": "${:,.2f}", "Log Return (%)": "{:+.2f}%",
             "GARCH Vol (%)": "{:.2f}%", "LSTM Vol (%)": "{:.2f}%", "Transformer Vol (%)": "{:.2f}%"
-        }), width="stretch")
+        }), use_container_width=True)
 
     with tab_stats:
         s1, s2, s3 = st.columns(3)
@@ -269,7 +290,7 @@ if st.session_state["analytics_results"] is not None:
         alloc_df = pd.DataFrame({"Category": ["Target Position", "Risk Buffer"], "Amount ($)": [rec_pos_val, cash_val]})
         fig_pie = px.pie(alloc_df, values="Amount ($)", names="Category", hole=0.4)
         fig_pie.update_layout(height=280, margin=dict(l=20, r=20, t=30, b=20))
-        st.plotly_chart(fig_pie, width="stretch")
+        st.plotly_chart(fig_pie, use_container_width=True)
 
     # -------------------------------------------------------------
     # Section 4: Live Risk-Engineered Paper & Testnet Execution Panel
@@ -277,9 +298,9 @@ if st.session_state["analytics_results"] is not None:
     st.divider()
     st.subheader("⚡ Live Risk-Engineered Execution Panel")
     
-    # Fetch Bybit Credentials from Render Environment Variables
-    bybit_key = os.environ.get("BYBIT_TESTNET_KEY")
-    bybit_secret = os.environ.get("BYBIT_TESTNET_SECRET")
+    # Fetch Bybit Credentials from Environment Variables or Secrets
+    bybit_key = os.environ.get("BYBIT_TESTNET_KEY") or st.secrets.get("BYBIT_TESTNET_KEY")
+    bybit_secret = os.environ.get("BYBIT_TESTNET_SECRET") or st.secrets.get("BYBIT_TESTNET_SECRET")
 
     # Execution Mode Selection Toggle
     execution_mode = st.radio(
@@ -306,15 +327,15 @@ if st.session_state["analytics_results"] is not None:
 
     col_buy, col_sell = st.columns(2)
 
-    # BUY ORDER ROUTING (NO RERUN LOOP)
+    # BUY ORDER ROUTING
     with col_buy:
         rec_allocation_usd = float(str(risk_summary.get("recommended_position_usd", "$0")).replace("$", "").replace(",", ""))
         st.markdown(f"**Target Recommended Allocation:** `${rec_allocation_usd:,.2f}`")
         
-        if st.button(f"📥 Execute VaR-Sized BUY ({current_symbol})", key="btn_execute_var_buy", width="stretch"):
+        if st.button(f"📥 Execute VaR-Sized BUY ({current_symbol})", key="btn_execute_var_buy", use_container_width=True):
             if execution_mode == "Bybit Testnet API (Live Sandbox)":
                 if not bybit_key or not bybit_secret:
-                    st.error("❌ Bybit Testnet keys not found in Render Environment Variables.")
+                    st.error("❌ Bybit Testnet keys not found in Environment or Streamlit Secrets.")
                 elif not HAS_BYBIT_EXEC:
                     st.error("❌ `src/bybit_execution.py` module not found or failed to load.")
                 else:
@@ -365,12 +386,12 @@ if st.session_state["analytics_results"] is not None:
                     })
                     st.success(f"Executed BUY order for {units_to_buy:.4f} {current_symbol} at ${latest_price:,.2f}")
 
-    # SELL ORDER ROUTING (NO RERUN LOOP)
+    # SELL ORDER ROUTING
     with col_sell:
         has_position = current_symbol in portfolio["positions"] and portfolio["positions"][current_symbol]["units"] > 0
         st.markdown(f"**Current Asset Holdings:** `{portfolio['positions'].get(current_symbol, {}).get('units', 0.0):.4f} {current_symbol}`")
         
-        if st.button(f"📤 Liquidate Position (SELL ALL)", key="btn_execute_sell_all", width="stretch", disabled=not has_position):
+        if st.button(f"📤 Liquidate Position (SELL ALL)", key="btn_execute_sell_all", use_container_width=True, disabled=not has_position):
             pos_data = portfolio["positions"].pop(current_symbol)
             sell_value_usd = pos_data["units"] * latest_price
             portfolio["cash_usd"] += sell_value_usd
@@ -390,74 +411,63 @@ if st.session_state["analytics_results"] is not None:
     if portfolio["trade_history"]:
         with st.expander("📜 Virtual Execution Audit Trail & Order History"):
             trade_df = pd.DataFrame(portfolio["trade_history"])
-            st.dataframe(trade_df, width="stretch")
+            st.dataframe(trade_df, use_container_width=True)
+
+    # -------------------------------------------------------------
+    # Section 5: Historical VaR Backtesting & Performance Audit Module
+    # -------------------------------------------------------------
+    st.divider()
+    st.header("📈 Historical VaR Backtesting & Performance Audit Module")
+
+    if run_var_backtest is None:
+        st.error("⚠️ Module `src/backtester.py` not found. Please ensure `src/backtester.py` is present in the repository.")
+    else:
+        with st.expander("🛠️ Backtest Configuration & Controls", expanded=True):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                bt_capital = st.number_input("Initial Capital ($)", value=float(current_capital), step=1000.0)
+            with col2:
+                bt_confidence = st.selectbox("VaR Confidence Level", [0.95, 0.99], index=0)
+            with col3:
+                bt_risk_pct = st.slider("Max Daily Risk Exposure (%)", 0.01, 0.05, 0.02, 0.005)
+
+        if st.button("🚀 Run Backtest Analysis", type="primary", use_container_width=True):
+            if df is None or df.empty:
+                st.warning("⚠️ Please load market data first in the main dashboard.")
+            else:
+                with st.spinner("Executing historical backtest and building equity curves..."):
+                    results = run_var_backtest(
+                        df=df,
+                        initial_capital=bt_capital,
+                        confidence_level=bt_confidence,
+                        max_risk_pct=bt_risk_pct
+                    )
+
+                if results.get("status") == "SUCCESS":
+                    st.success("✅ Backtest Analysis Completed!")
+
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Strategy Final Capital", f"${results['final_strategy_equity']:,}", f"{results['strategy_total_return_pct']}%")
+                    m2.metric("Buy & Hold Capital", f"${results['final_bh_equity']:,}", f"{results['buy_hold_total_return_pct']}%")
+                    m3.metric("Sharpe Ratio", f"{results['strategy_sharpe']}")
+                    m4.metric("Max Drawdown", f"{results['strategy_max_drawdown_pct']}%")
+
+                    st.subheader("📊 Equity Curve: VaR Strategy vs. Buy & Hold")
+                    st.line_chart(results["backtest_df"][['Strategy_Equity', 'Buy_Hold_Equity']])
+
+                    st.info(
+                        f"🛡️ **VaR Model Audit:** Observed **{results['var_breaches']} breaches** "
+                        f"out of {results['total_periods_tested']} periods."
+                    )
+
+                    csv_bytes = results["backtest_df"].to_csv().encode('utf-8')
+                    st.download_button(
+                        label="📥 Download Backtest Audit Report (CSV)",
+                        data=csv_bytes,
+                        file_name=f"var_backtest_audit_report_{current_symbol}.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    st.error(f"❌ Backtest failed: {results.get('message', 'Unknown Error')}")
 
     gc.collect()
-
-# ==============================================================================
-# SECTION: HISTORICAL VaR BACKTESTING & PERFORMANCE AUDIT MODULE
-# ==============================================================================
-import streamlit as st
-import pandas as pd
-
-try:
-    from src.backtester import run_var_backtest
-except ImportError:
-    run_var_backtest = None
-
-st.markdown("---")
-st.header("📈 Historical VaR Backtesting & Performance Audit Module")
-
-if run_var_backtest is None:
-    st.error("⚠️ Module `src/backtester.py` not found.")
-else:
-    with st.expander("🛠️ Backtest Configuration & Controls", expanded=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            bt_capital = st.number_input("Initial Capital ($)", value=10000.0, step=1000.0)
-        with col2:
-            bt_confidence = st.selectbox("VaR Confidence Level", [0.95, 0.99], index=0)
-        with col3:
-            bt_risk_pct = st.slider("Max Daily Risk Exposure (%)", 0.01, 0.05, 0.02, 0.005)
-
-    if st.button("🚀 Run Backtest Analysis", type="primary"):
-        if 'df_market' in st.session_state and not st.session_state['df_market'].empty:
-            df_input = st.session_state['df_market']
-        else:
-            df_input = None
-
-        if df_input is None:
-            st.warning("⚠️ Please load market data first in the main dashboard.")
-        else:
-            with st.spinner("Executing historical backtest..."):
-                results = run_var_backtest(
-                    df=df_input,
-                    initial_capital=bt_capital,
-                    confidence_level=bt_confidence,
-                    max_risk_pct=bt_risk_pct
-                )
-
-            if results.get("status") == "SUCCESS":
-                st.success("✅ Backtest Analysis Completed!")
-
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Strategy Final Capital", f"${results['final_strategy_equity']:,}", f"{results['strategy_total_return_pct']}%")
-                m2.metric("Buy & Hold Capital", f"${results['final_bh_equity']:,}", f"{results['buy_hold_total_return_pct']}%")
-                m3.metric("Sharpe Ratio", f"{results['strategy_sharpe']}")
-                m4.metric("Max Drawdown", f"{results['strategy_max_drawdown_pct']}%")
-
-                st.subheader("📊 Equity Curve: VaR Strategy vs. Buy & Hold")
-                st.line_chart(results["backtest_df"][['Strategy_Equity', 'Buy_Hold_Equity']])
-
-                st.info(
-                    f"🛡️ **VaR Model Audit:** Observed **{results['var_breaches']} breaches** "
-                    f"out of {results['total_periods_tested']} periods."
-                )
-
-                csv_bytes = results["backtest_df"].to_csv().encode('utf-8')
-                st.download_button(
-                    label="📥 Download Backtest Audit Report (CSV)",
-                    data=csv_bytes,
-                    file_name="var_backtest_audit_report.csv",
-                    mime="text/csv"
-                )
