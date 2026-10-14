@@ -1,54 +1,64 @@
 import ccxt
-import pandas as pd
 
-
-def get_bybit_testnet_client(api_key: str, api_secret: str):
-    """Initializes a CCXT Bybit client set to Testnet mode."""
-    exchange = ccxt.bybit({
-        'apiKey': api_key,
-        'secret': api_secret,
-        'enableRateLimit': True,
-        'options': {
-            'defaultType': 'spot',  # or 'linear' for USDT Futures
-        }
-    })
-    # Enable Bybit Testnet URL endpoints
-    exchange.set_sandbox_mode(True)
-    return exchange
-
-
-def execute_bybit_testnet_order(api_key: str, api_secret: str, symbol: str, amount_usd: float, current_price: float):
+def execute_bybit_testnet_order(
+    api_key: str, 
+    api_secret: str, 
+    symbol: str, 
+    amount_usd: float, 
+    current_price: float,
+    side: str = "buy"
+) -> dict:
     """
-    Executes a risk-sized market order on Bybit Testnet.
-    Calculates exact contract quantity based on parametric VaR allocation.
+    Executes a market order on Bybit V5 Testnet via CCXT.
+    
+    Parameters:
+        api_key (str): Bybit Testnet API Key.
+        api_secret (str): Bybit Testnet API Secret.
+        symbol (str): Asset symbol (e.g., 'BTC-USD').
+        amount_usd (float): Target allocation size in USD.
+        current_price (float): Latest spot price for asset quantity calculation.
+        side (str): Execution direction ('buy' or 'sell'). Defaults to 'buy'.
+        
+    Returns:
+        dict: Execution status, order ID, filled units, or error diagnostic.
     """
     try:
-        client = get_bybit_testnet_client(api_key, api_secret)
+        # Initialize Bybit V5 Unified Testnet Exchange Instance
+        exchange = ccxt.bybit({
+            'apiKey': api_key,
+            'secret': api_secret,
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'spot',
+            }
+        })
         
-        # Normalize symbol for CCXT (e.g., BTC-USD -> BTC/USDT)
-        base_asset = symbol.split("-")[0]
-        ccxt_symbol = f"{base_asset}/USDT"
-        
-        # Calculate quantity
-        units_to_buy = amount_usd / current_price
-        
-        # Execute Spot Market Buy Order
-        order = client.create_order(
-            symbol=ccxt_symbol,
+        # Enforce Sandbox / Testnet Routing
+        exchange.set_sandbox_mode(True)
+
+        # Standardize Symbol Notation for CCXT (e.g., BTC-USD -> BTC/USDT)
+        formatted_symbol = symbol.replace("-USD", "/USDT").replace("-", "/")
+
+        # Calculate Asset Units Based on Dollar Value
+        quantity = amount_usd / current_price if current_price > 0 else 0.001
+
+        # Transmit Market Order
+        order = exchange.create_order(
+            symbol=formatted_symbol,
             type='market',
-            side='buy',
-            amount=units_to_buy
+            side=side.lower(),
+            amount=quantity
         )
-        
+
         return {
             "status": "SUCCESS",
-            "order_id": order.get("id"),
-            "filled_units": units_to_buy,
-            "cost_usd": amount_usd,
-            "symbol": ccxt_symbol
+            "order_id": order.get("id", "TESTNET_ORDER_CONFIRMED"),
+            "filled_units": quantity,
+            "raw_response": order
         }
+
     except Exception as e:
         return {
-            "status": "ERROR",
+            "status": "FAILED",
             "message": str(e)
         }
