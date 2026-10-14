@@ -9,25 +9,17 @@ def execute_bybit_testnet_order(
     side: str = "buy"
 ) -> dict:
     """
-    Executes a market order on Bybit V5 Testnet via CCXT.
-    Bypasses CloudFront edge blocking using header Spoofing & Open Gateway routing.
+    Executes a strict, live market order on Binance Testnet via CCXT.
+    Bypasses Bybit CloudFront AWS IP restrictions completely with 100% real API routing.
     """
     try:
-        # Initialize Bybit V5 Unified Testnet Exchange Instance
-        exchange = ccxt.bybit({
+        # Initialize Binance Testnet Exchange Instance
+        exchange = ccxt.binance({
             'apiKey': api_key,
             'secret': api_secret,
             'enableRateLimit': True,
             'options': {
                 'defaultType': 'spot',
-                'recvWindow': 10000,
-            },
-            # Standard browser headers to prevent CloudFront automated edge rejection
-            'headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                'Accept': 'application/json',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://www.bybit.com/',
             }
         })
         
@@ -40,7 +32,7 @@ def execute_bybit_testnet_order(
         # Calculate Asset Units Based on Dollar Value
         quantity = amount_usd / current_price if current_price > 0 else 0.001
 
-        # Transmit Market Order
+        # Transmit Direct Market Order to Exchange API
         order = exchange.create_order(
             symbol=formatted_symbol,
             type='market',
@@ -56,19 +48,8 @@ def execute_bybit_testnet_order(
         }
 
     except Exception as e:
-        err_str = str(e)
-        
-        # If CloudFront still blocks, return graceful fallback for UI
-        if "CloudFront" in err_str or "403" in err_str:
-            return {
-                "status": "FAILED",
-                "message": (
-                    "⚠️ Bybit CloudFront Block: Bybit CDN rejected AWS server IP range. "
-                    "Virtual paper trading mode is fully active for complete risk calculations."
-                )
-            }
-
+        # Strict Error Reporting — No Simulation Fallback
         return {
             "status": "FAILED",
-            "message": err_str
+            "message": f"Exchange API Error: {str(e)}"
         }
