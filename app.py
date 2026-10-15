@@ -34,6 +34,17 @@ from src.data_loader import fetch_crypto_data
 from src.garch_model import fit_garch_model
 from src.risk_engine import calculate_position_size
 
+# Safe import for Asymmetric Econometric Models (GJR-GARCH & EGARCH)
+try:
+    from asymmetric_garch import fit_gjr_garch, fit_egarch
+    HAS_ASYMMETRIC_GARCH = True
+except ImportError:
+    try:
+        from src.asymmetric_garch import fit_gjr_garch, fit_egarch
+        HAS_ASYMMETRIC_GARCH = True
+    except ImportError:
+        HAS_ASYMMETRIC_GARCH = False
+
 # Safe import for Backtester Module
 try:
     from backtester import run_var_backtest
@@ -98,7 +109,7 @@ if "paper_portfolio" not in st.session_state:
 
 # Header & Metadata
 st.title("📈 Crypto Volatility Forecasting & Quantitative Risk Suite")
-st.caption("Institutional Multi-Model Benchmarking Engine (GARCH(1,1) vs. LSTM vs. Transformer) with Parametric VaR Risk Targeting")
+st.caption("Institutional Multi-Model Benchmarking Engine (GARCH vs. GJR-GARCH vs. EGARCH vs. LSTM vs. Transformer) with Parametric VaR Sizing")
 st.divider()
 
 # Sidebar Controls
@@ -117,7 +128,7 @@ epochs = st.sidebar.number_input(
 )
 
 st.sidebar.divider()
-st.sidebar.info("💡 **Consultant Note:** Benchmarks econometric time-series against deep learning architectures to optimize risk-weighted position sizing.")
+st.sidebar.info("💡 **Consultant Note:** Benchmarks symmetric & asymmetric econometrics against deep learning architectures to optimize risk-weighted capital allocation.")
 
 # ----------------------------------------------------------------------
 # Cached Data Fetcher Function
@@ -140,20 +151,31 @@ if "analytics_results" not in st.session_state:
 run_analytics = st.sidebar.button("🚀 Execute Quantitative Analytics", key="btn_run_analytics", use_container_width=True)
 
 if run_analytics or st.session_state["analytics_results"] is None:
-    with st.spinner("Retrieving market data feed, parameterizing models, and performing econometric audit..."):
+    with st.spinner("Retrieving market data feed, parameterizing econometric & neural models..."):
         
         # Load Market Data (With Auto-Fallback)
         df = load_cached_market_data(symbol)
 
-        # 1. Fit GARCH Baseline
+        # 1. Fit Standard GARCH(1,1) Baseline
         _, garch_vol = fit_garch_model(df["Log_Return"])
-
         if isinstance(garch_vol, np.ndarray):
             garch_vol = pd.Series(garch_vol, index=df.index[-len(garch_vol):], dtype="float32")
         else:
             garch_vol = garch_vol.astype("float32")
 
-        # 2. Fit LSTM
+        # 2. Fit Asymmetric Econometric Models (GJR-GARCH & EGARCH)
+        if HAS_ASYMMETRIC_GARCH:
+            try:
+                gjr_params, gjr_vol = fit_gjr_garch(df["Log_Return"])
+                egarch_params, egarch_vol = fit_egarch(df["Log_Return"])
+            except Exception:
+                gjr_params, gjr_vol = {}, garch_vol
+                egarch_params, egarch_vol = {}, garch_vol
+        else:
+            gjr_params, gjr_vol = {}, garch_vol
+            egarch_params, egarch_vol = {}, garch_vol
+
+        # 3. Fit PyTorch Deep LSTM
         if HAS_LSTM:
             try:
                 _, lstm_vol = train_lstm_volatility(df["Log_Return"], epochs=int(epochs))
@@ -166,7 +188,7 @@ if run_analytics or st.session_state["analytics_results"] is None:
         else:
             lstm_vol = garch_vol
 
-        # 3. Fit Transformer
+        # 4. Fit Multi-Head Transformer
         if HAS_TRANSFORMER:
             try:
                 _, trans_vol = train_transformer_volatility(df["Log_Return"], epochs=int(epochs))
@@ -180,21 +202,22 @@ if run_analytics or st.session_state["analytics_results"] is None:
             trans_vol = garch_vol
 
         # Data Alignment
-        min_len = min(len(garch_vol), len(lstm_vol), len(trans_vol))
+        min_len = min(len(garch_vol), len(gjr_vol), len(egarch_vol), len(lstm_vol), len(trans_vol))
         plot_dates = df.index[-min_len:]
         
         garch_series = (garch_vol.iloc[-min_len:] * 100).astype("float32")
+        gjr_series = (gjr_vol.iloc[-min_len:] * 100).astype("float32")
+        egarch_series = (egarch_vol.iloc[-min_len:] * 100).astype("float32")
         lstm_series = (lstm_vol.iloc[-min_len:] * 100).astype("float32")
         trans_series = (trans_vol.iloc[-min_len:] * 100).astype("float32")
 
-        # Latest Metrics
+        # Latest Spot Metrics
         latest_price = float(df["Close"].iloc[-1])
         latest_garch_vol = float(garch_vol.iloc[-1])
-        latest_lstm_vol = float(lstm_vol.iloc[-1]) if HAS_LSTM else latest_garch_vol
-        latest_trans_vol = float(trans_vol.iloc[-1]) if HAS_TRANSFORMER else latest_garch_vol
+        latest_gjr_vol = float(gjr_vol.iloc[-1]) if HAS_ASYMMETRIC_GARCH else latest_garch_vol
 
         risk_summary = calculate_position_size(
-            account_balance=capital, predicted_volatility=latest_garch_vol
+            account_balance=capital, predicted_volatility=latest_gjr_vol
         )
 
         gc.collect()
@@ -202,12 +225,15 @@ if run_analytics or st.session_state["analytics_results"] is None:
         st.session_state["analytics_results"] = {
             "df": df,
             "garch_series": garch_series,
+            "gjr_series": gjr_series,
+            "egarch_series": egarch_series,
             "lstm_series": lstm_series,
             "trans_series": trans_series,
             "latest_price": latest_price,
             "latest_garch_vol": latest_garch_vol,
-            "latest_lstm_vol": latest_lstm_vol,
-            "latest_trans_vol": latest_trans_vol,
+            "latest_gjr_vol": latest_gjr_vol,
+            "gjr_params": gjr_params,
+            "egarch_params": egarch_params,
             "risk_summary": risk_summary,
             "plot_dates": plot_dates,
             "symbol": symbol,
@@ -222,11 +248,13 @@ if st.session_state["analytics_results"] is not None:
     
     df = res["df"]
     garch_series = res["garch_series"]
+    gjr_series = res["gjr_series"]
+    egarch_series = res["egarch_series"]
     lstm_series = res["lstm_series"]
     trans_series = res["trans_series"]
     latest_price = res["latest_price"]
     latest_garch_vol = res["latest_garch_vol"]
-    latest_lstm_vol = res["latest_lstm_vol"]
+    latest_gjr_vol = res["latest_gjr_vol"]
     risk_summary = res["risk_summary"]
     plot_dates = res["plot_dates"]
     current_symbol = res["symbol"]
@@ -237,7 +265,7 @@ if st.session_state["analytics_results"] is not None:
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Spot Price", f"${latest_price:,.2f}")
     m2.metric("GARCH(1,1) Vol", f"{latest_garch_vol*100:.2f}%")
-    m3.metric("LSTM Vol", f"{latest_lstm_vol*100:.2f}%")
+    m3.metric("GJR-GARCH Vol", f"{latest_gjr_vol*100:.2f}%")
     m4.metric("1-Day Parametric VaR", risk_summary.get("one_day_95pct_VaR", "N/A"))
     m5.metric("Target Max Allocation", risk_summary.get("recommended_position_usd", "N/A"))
 
@@ -252,9 +280,11 @@ if st.session_state["analytics_results"] is not None:
 
     with tab_chart:
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=plot_dates, y=garch_series, name="GARCH(1,1)", line=dict(color="#1f77b4", width=2.5)))
+        fig.add_trace(go.Scatter(x=plot_dates, y=garch_series, name="GARCH(1,1)", line=dict(color="#1f77b4", width=2)))
+        fig.add_trace(go.Scatter(x=plot_dates, y=gjr_series, name="GJR-GARCH (Asymmetric)", line=dict(color="#d62728", width=2.5)))
+        fig.add_trace(go.Scatter(x=plot_dates, y=egarch_series, name="EGARCH (Exponential)", line=dict(color="#9467bd", width=2, dash="dot")))
         fig.add_trace(go.Scatter(x=plot_dates, y=lstm_series, name="LSTM Net", line=dict(color="#ff7f0e", width=2, dash="dash")))
-        fig.add_trace(go.Scatter(x=plot_dates, y=trans_series, name="Transformer", line=dict(color="#2ca02c", width=2, dash="dot")))
+        fig.add_trace(go.Scatter(x=plot_dates, y=trans_series, name="Transformer", line=dict(color="#2ca02c", width=2, dash="dashdot")))
         fig.update_layout(
             title=f"Multi-Model Daily Volatility Horizon (%) — {current_symbol}",
             xaxis_title="Timeline", yaxis_title="Conditional Volatility (%)",
@@ -268,19 +298,24 @@ if st.session_state["analytics_results"] is not None:
             "Asset Spot ($)": df["Close"].iloc[-15:].values,
             "Log Return (%)": df["Log_Return"].iloc[-15:].values * 100,
             "GARCH Vol (%)": garch_series.iloc[-15:].values,
+            "GJR-GARCH Vol (%)": gjr_series.iloc[-15:].values,
+            "EGARCH Vol (%)": egarch_series.iloc[-15:].values,
             "LSTM Vol (%)": lstm_series.iloc[-15:].values,
             "Transformer Vol (%)": trans_series.iloc[-15:].values
         })
         st.dataframe(diag_df.style.format({
             "Asset Spot ($)": "${:,.2f}", "Log Return (%)": "{:+.2f}%",
-            "GARCH Vol (%)": "{:.2f}%", "LSTM Vol (%)": "{:.2f}%", "Transformer Vol (%)": "{:.2f}%"
+            "GARCH Vol (%)": "{:.2f}%", "GJR-GARCH Vol (%)": "{:.2f}%", "EGARCH Vol (%)": "{:.2f}%",
+            "LSTM Vol (%)": "{:.2f}%", "Transformer Vol (%)": "{:.2f}%"
         }), use_container_width=True)
 
     with tab_stats:
-        s1, s2, s3 = st.columns(3)
-        s1.write(pd.Series(garch_series).describe().to_frame("GARCH Metrics"))
-        s2.write(pd.Series(lstm_series).describe().to_frame("LSTM Metrics"))
-        s3.write(pd.Series(trans_series).describe().to_frame("Transformer Metrics"))
+        s1, s2, s3, s4, s5 = st.columns(5)
+        s1.write(pd.Series(garch_series).describe().to_frame("GARCH"))
+        s2.write(pd.Series(gjr_series).describe().to_frame("GJR-GARCH"))
+        s3.write(pd.Series(egarch_series).describe().to_frame("EGARCH"))
+        s4.write(pd.Series(lstm_series).describe().to_frame("LSTM"))
+        s5.write(pd.Series(trans_series).describe().to_frame("Transformer"))
 
     st.divider()
 
@@ -289,7 +324,7 @@ if st.session_state["analytics_results"] is not None:
     r1, r2 = st.columns([1, 1])
     with r1:
         st.write(f"• **Portfolio Capital:** `${current_capital:,.2f}`")
-        st.write(f"• **Predicted Daily Volatility:** `{risk_summary.get('predicted_daily_volatility', 'N/A')}`")
+        st.write(f"• **Predicted Daily Volatility (GJR-GARCH):** `{risk_summary.get('predicted_daily_volatility', 'N/A')}`")
         st.write(f"• **1-Day 95% Value-at-Risk (VaR):** `{risk_summary.get('one_day_95pct_VaR', 'N/A')}`")
         st.write(f"• **Maximum Allowable Risk Budget:** `{risk_summary.get('max_allowed_risk_usd', 'N/A')}`")
         st.write(f"• **Recommended Allocation Cap:** `{risk_summary.get('recommended_position_usd', 'N/A')}`")
@@ -312,11 +347,9 @@ if st.session_state["analytics_results"] is not None:
     st.divider()
     st.subheader("⚡ Live Risk-Engineered Execution Panel")
     
-    # Fetch Bybit Credentials from Environment Variables or Secrets
     bybit_key = os.environ.get("BYBIT_TESTNET_KEY") or st.secrets.get("BYBIT_TESTNET_KEY")
     bybit_secret = os.environ.get("BYBIT_TESTNET_SECRET") or st.secrets.get("BYBIT_TESTNET_SECRET")
 
-    # Execution Mode Selection Toggle
     execution_mode = st.radio(
         "Select Execution Venue:",
         ["Virtual Paper Trading (Local)", "Bybit Testnet API (Live Sandbox)"],
@@ -326,7 +359,6 @@ if st.session_state["analytics_results"] is not None:
 
     portfolio = st.session_state["paper_portfolio"]
     
-    # Portfolio Equity Display
     p1, p2, p3 = st.columns(3)
     p1.metric("Available Virtual Cash", f"${portfolio['cash_usd']:,.2f}")
     
@@ -341,7 +373,6 @@ if st.session_state["analytics_results"] is not None:
 
     col_buy, col_sell = st.columns(2)
 
-    # BUY ORDER ROUTING
     with col_buy:
         rec_allocation_usd = float(str(risk_summary.get("recommended_position_usd", "$0")).replace("$", "").replace(",", ""))
         st.markdown(f"**Target Recommended Allocation:** `${rec_allocation_usd:,.2f}`")
@@ -400,7 +431,6 @@ if st.session_state["analytics_results"] is not None:
                     })
                     st.success(f"Executed BUY order for {units_to_buy:.4f} {current_symbol} at ${latest_price:,.2f}")
 
-    # SELL ORDER ROUTING
     with col_sell:
         has_position = current_symbol in portfolio["positions"] and portfolio["positions"][current_symbol]["units"] > 0
         st.markdown(f"**Current Asset Holdings:** `{portfolio['positions'].get(current_symbol, {}).get('units', 0.0):.4f} {current_symbol}`")
