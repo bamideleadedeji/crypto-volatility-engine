@@ -34,6 +34,17 @@ from src.data_loader import fetch_crypto_data
 from src.garch_model import fit_garch_model
 from src.risk_engine import calculate_position_size
 
+# Safe import for Automated Risk Alert Engine
+try:
+    from alert_engine import check_risk_alerts, send_telegram_alert
+    HAS_ALERT_ENGINE = True
+except ImportError:
+    try:
+        from src.alert_engine import check_risk_alerts, send_telegram_alert
+        HAS_ALERT_ENGINE = True
+    except ImportError:
+        HAS_ALERT_ENGINE = False
+
 # Safe import for Asymmetric Econometric Models (GJR-GARCH & EGARCH)
 try:
     from asymmetric_garch import fit_gjr_garch, fit_egarch
@@ -109,7 +120,7 @@ if "paper_portfolio" not in st.session_state:
 
 # Header & Metadata
 st.title("📈 Crypto Volatility Forecasting & Quantitative Risk Suite")
-st.caption("Institutional Multi-Model Benchmarking Engine (GARCH vs. GJR-GARCH vs. EGARCH vs. LSTM vs. Transformer) with Parametric VaR Sizing")
+st.caption("Institutional Multi-Model Benchmarking Engine (GARCH vs. GJR-GARCH vs. EGARCH vs. LSTM vs. Transformer) with Automated Risk Alerts")
 st.divider()
 
 # Sidebar Controls
@@ -126,6 +137,11 @@ confidence_level = st.sidebar.slider(
 epochs = st.sidebar.number_input(
     "Neural Network Epochs", value=10, min_value=5, max_value=20, step=5
 )
+
+st.sidebar.divider()
+st.sidebar.header("🚨 Automated Risk Alert Limits")
+alert_vol_limit = st.sidebar.slider("Max Allowable Daily Volatility (%)", 1.0, 10.0, 5.0, 0.5)
+alert_var_limit = st.sidebar.number_input("Max Allowable 1-Day VaR ($USD)", value=500.0, step=50.0)
 
 st.sidebar.divider()
 st.sidebar.info("💡 **Consultant Note:** Benchmarks symmetric & asymmetric econometrics against deep learning architectures to optimize risk-weighted capital allocation.")
@@ -246,7 +262,7 @@ if run_analytics or st.session_state["analytics_results"] is None:
 if st.session_state["analytics_results"] is not None:
     res = st.session_state["analytics_results"]
     
-    # Safe unpacking with fallbacks for stale session states
+    # Safe unpacking
     df = res["df"]
     garch_series = res["garch_series"]
     gjr_series = res.get("gjr_series", garch_series)
@@ -269,6 +285,27 @@ if st.session_state["analytics_results"] is not None:
     m3.metric("GJR-GARCH Vol", f"{latest_gjr_vol*100:.2f}%")
     m4.metric("1-Day Parametric VaR", risk_summary.get("one_day_95pct_VaR", "N/A"))
     m5.metric("Target Max Allocation", risk_summary.get("recommended_position_usd", "N/A"))
+
+    # Automated Risk Threshold Audit Banner
+    if HAS_ALERT_ENGINE:
+        var_str_val = str(risk_summary.get("one_day_95pct_VaR", "$0")).replace("$", "").replace(",", "")
+        try:
+            var_val_usd = float(var_str_val)
+        except Exception:
+            var_val_usd = 0.0
+            
+        alert_res = check_risk_alerts(
+            predicted_vol=latest_gjr_vol,
+            portfolio_var_usd=var_val_usd,
+            vol_threshold_pct=float(alert_vol_limit),
+            var_threshold_usd=float(alert_var_limit),
+            symbol=current_symbol
+        )
+        
+        if alert_res["status"] == "ALERT":
+            st.error(f"🚨 **RISK THRESHOLD BREACH DETECTED:**\n\n" + "\n".join(alert_res["alerts_triggered"]))
+        else:
+            st.success(f"✅ **Risk Status Normal:** Predicted Volatility ({latest_gjr_vol*100:.2f}%) and 1-Day VaR (${var_val_usd:,.2f}) are within specified limits.")
 
     st.divider()
 
@@ -320,8 +357,8 @@ if st.session_state["analytics_results"] is not None:
 
     st.divider()
 
-    # Section 3: Risk Sizing Engine
-    st.subheader("🛡️ Executive Risk-Targeted Position Sizing Framework")
+    # Section 3: Risk Sizing Engine & Telegram Alert Dispatch
+    st.subheader("🛡️ Executive Risk-Targeted Position Sizing Framework & Alerts")
     r1, r2 = st.columns([1, 1])
     with r1:
         st.write(f"• **Portfolio Capital:** `${current_capital:,.2f}`")
@@ -329,6 +366,23 @@ if st.session_state["analytics_results"] is not None:
         st.write(f"• **1-Day 95% Value-at-Risk (VaR):** `{risk_summary.get('one_day_95pct_VaR', 'N/A')}`")
         st.write(f"• **Maximum Allowable Risk Budget:** `{risk_summary.get('max_allowed_risk_usd', 'N/A')}`")
         st.write(f"• **Recommended Allocation Cap:** `{risk_summary.get('recommended_position_usd', 'N/A')}`")
+
+        # Telegram Alert Dispatcher
+        if HAS_ALERT_ENGINE:
+            tg_token = os.environ.get("TELEGRAM_BOT_TOKEN") or st.secrets.get("TELEGRAM_BOT_TOKEN")
+            tg_chat = os.environ.get("TELEGRAM_CHAT_ID") or st.secrets.get("TELEGRAM_CHAT_ID")
+            
+            if st.button("📲 Dispatch Telegram Risk Alert Payload", key="btn_send_telegram", use_container_width=True):
+                with st.spinner("Transmitting risk payload to Telegram API..."):
+                    tg_res = send_telegram_alert(
+                        bot_token=tg_token,
+                        chat_id=tg_chat,
+                        message=alert_res["summary_msg"]
+                    )
+                    if tg_res["status"] == "SUCCESS":
+                        st.success("✅ Telegram Risk Alert Sent!")
+                    else:
+                        st.warning(f"⚠️ Telegram Dispatch Note: {tg_res['message']}")
 
     with r2:
         pos_val_str = str(risk_summary.get("recommended_position_usd", "$0")).replace("$", "").replace(",", "")
