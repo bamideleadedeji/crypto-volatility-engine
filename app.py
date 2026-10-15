@@ -246,15 +246,16 @@ if run_analytics or st.session_state["analytics_results"] is None:
 if st.session_state["analytics_results"] is not None:
     res = st.session_state["analytics_results"]
     
+    # Safe unpacking with fallbacks for stale session states
     df = res["df"]
     garch_series = res["garch_series"]
-    gjr_series = res["gjr_series"]
-    egarch_series = res["egarch_series"]
+    gjr_series = res.get("gjr_series", garch_series)
+    egarch_series = res.get("egarch_series", garch_series)
     lstm_series = res["lstm_series"]
     trans_series = res["trans_series"]
     latest_price = res["latest_price"]
     latest_garch_vol = res["latest_garch_vol"]
-    latest_gjr_vol = res["latest_gjr_vol"]
+    latest_gjr_vol = res.get("latest_gjr_vol", latest_garch_vol)
     risk_summary = res["risk_summary"]
     plot_dates = res["plot_dates"]
     current_symbol = res["symbol"]
