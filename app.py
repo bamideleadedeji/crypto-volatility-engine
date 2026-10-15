@@ -483,18 +483,17 @@ if st.session_state["analytics_results"] is not None:
                 ])
 
                 with tab_p1:
-    st.dataframe(p_results["allocation_breakdown"], use_container_width=True)
-    
-    # Generate CSV Audit Export for Multi-Asset Portfolio Allocation
-    portfolio_csv = p_results["allocation_breakdown"].to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 Download Portfolio Allocation & VaR Audit Report (CSV)",
-        data=portfolio_csv,
-        file_name="multi_asset_portfolio_var_report.csv",
-        mime="text/csv",
-        key="btn_download_portfolio_csv",
-        use_container_width=True
-    )
+                    st.dataframe(p_results["allocation_breakdown"], use_container_width=True)
+                    
+                    portfolio_csv = p_results["allocation_breakdown"].to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Download Portfolio Allocation & VaR Audit Report (CSV)",
+                        data=portfolio_csv,
+                        file_name="multi_asset_portfolio_var_report.csv",
+                        mime="text/csv",
+                        key="btn_download_portfolio_csv",
+                        use_container_width=True
+                    )
 
                 with tab_p2:
                     st.subheader("Cross-Asset Correlation Matrix (R)")
