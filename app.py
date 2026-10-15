@@ -37,11 +37,25 @@ from src.risk_engine import calculate_position_size
 # Safe import for Backtester Module
 try:
     from backtester import run_var_backtest
+    HAS_BACKTESTER = True
 except ImportError:
     try:
         from src.backtester import run_var_backtest
+        HAS_BACKTESTER = True
     except ImportError:
         run_var_backtest = None
+        HAS_BACKTESTER = False
+
+# Safe import for Multi-Asset Portfolio Risk Module
+try:
+    from portfolio_risk import fetch_multi_asset_returns, calculate_portfolio_var
+    HAS_PORTFOLIO_VAR = True
+except ImportError:
+    try:
+        from src.portfolio_risk import fetch_multi_asset_returns, calculate_portfolio_var
+        HAS_PORTFOLIO_VAR = True
+    except ImportError:
+        HAS_PORTFOLIO_VAR = False
 
 # Safe import for LSTM model
 try:
@@ -414,7 +428,82 @@ if st.session_state["analytics_results"] is not None:
             st.dataframe(trade_df, use_container_width=True)
 
     # -------------------------------------------------------------
-    # Section 5: Historical VaR Backtesting & Performance Audit Module
+    # Section 5: Multi-Asset Portfolio VaR & Variance-Covariance Matrix
+    # -------------------------------------------------------------
+    st.divider()
+    st.header("🌐 Multi-Asset Portfolio VaR & Covariance Matrix")
+    st.caption("Parametric Portfolio Risk Sizing across BTC, ETH, and SOL using Variance-Covariance Matrices.")
+
+    if not HAS_PORTFOLIO_VAR:
+        st.error("⚠️ Module `src/portfolio_risk.py` not found. Please ensure `src/portfolio_risk.py` is committed in GitHub.")
+    else:
+        with st.expander("⚙️ Multi-Asset Basket Allocation Controls", expanded=True):
+            p_col1, p_col2, p_col3 = st.columns(3)
+            with p_col1:
+                w_btc = st.slider("BTC Allocation (%)", 0, 100, 50, 5) / 100.0
+            with p_col2:
+                w_eth = st.slider("ETH Allocation (%)", 0, 100, 30, 5) / 100.0
+            with p_col3:
+                w_sol = st.slider("SOL Allocation (%)", 0, 100, 20, 5) / 100.0
+
+        if st.button("🚀 Calculate Portfolio VaR & Covariance", type="primary", use_container_width=True):
+            with st.spinner("Fetching multi-asset price series & constructing Variance-Covariance Matrix..."):
+                basket_symbols = ["BTC-USD", "ETH-USD", "SOL-USD"]
+                weights_dict = {"BTC-USD": w_btc, "ETH-USD": w_eth, "SOL-USD": w_sol}
+                
+                multi_returns = fetch_multi_asset_returns(
+                    symbols=basket_symbols,
+                    data_fetcher_func=load_cached_market_data
+                )
+                
+                p_results = calculate_portfolio_var(
+                    returns_df=multi_returns,
+                    weights=weights_dict,
+                    portfolio_capital=float(current_capital),
+                    confidence_level=confidence_level
+                )
+
+            if p_results.get("status") == "SUCCESS":
+                st.success("✅ Multi-Asset Covariance & VaR Sizing Complete!")
+
+                pv1, pv2, pv3, pv4 = st.columns(4)
+                pv1.metric("Portfolio Capital", f"${p_results['portfolio_capital']:,.2f}")
+                pv2.metric("Portfolio Daily Vol", f"{p_results['portfolio_daily_vol_pct']:.2f}%")
+                pv3.metric(f"1-Day {p_results['confidence_level_pct']:.0f}% Portfolio VaR", f"${p_results['portfolio_var_usd']:,.2f}")
+                pv4.metric(
+                    "Diversification Benefit", 
+                    f"${p_results['diversification_benefit_usd']:,.2f}",
+                    delta=f"{p_results['diversification_pct']:.2f}% Risk Reduction"
+                )
+
+                tab_p1, tab_p2, tab_p3 = st.tabs([
+                    "📊 Portfolio Allocation & Risk Breakdown",
+                    "🔥 Asset Correlation Matrix (R)",
+                    "📐 Covariance Matrix (Σ)"
+                ])
+
+                with tab_p1:
+                    st.dataframe(p_results["allocation_breakdown"], use_container_width=True)
+
+                with tab_p2:
+                    st.subheader("Cross-Asset Correlation Matrix (R)")
+                    fig_corr = px.imshow(
+                        p_results["corr_matrix_df"],
+                        text_auto=".2f",
+                        color_continuous_scale="Blues",
+                        title="Asset Return Correlation Matrix"
+                    )
+                    st.plotly_chart(fig_corr, use_container_width=True)
+
+                with tab_p3:
+                    st.subheader("Variance-Covariance Matrix (Σ)")
+                    st.dataframe(p_results["cov_matrix_df"].style.format("{:.6f}"), use_container_width=True)
+
+            else:
+                st.error(f"❌ Portfolio VaR calculation failed: {p_results.get('message')}")
+
+    # -------------------------------------------------------------
+    # Section 6: Historical VaR Backtesting & Performance Audit Module
     # -------------------------------------------------------------
     st.divider()
     st.header("📈 Historical VaR Backtesting & Performance Audit Module")
