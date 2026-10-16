@@ -538,6 +538,63 @@ if st.session_state["analytics_results"] is not None:
             st.success(f"Liquidated position for ${sell_value_usd:,.2f} (Realized P&L:${pnl_usd:+,.2f})")
 
     if portfolio["trade_history"]:
+        # ==============================================================================
+# SECTION 4: CURRENCY-AWARE ORDER EXECUTION & AUDIT LOGGING ENGINE
+# ==============================================================================
+
+try:
+    # 1. Safely retrieve session variables or set robust defaults
+    active_currency_mode = st.session_state.get("currency_mode", "NGN (₦)")
+    active_venue = st.session_state.get("venue_toggle", "Paper")
+    active_asset = st.session_state.get("selected_asset", "BTC-USD")
+    
+    # 2. Determine spot price in local currency & establish FX rate guard
+    # Default USD/NGN rate fallback if live feed is unavailable
+    usd_to_ngn_rate = float(st.session_state.get("usd_ngn_rate", 1500.0))
+    
+    # Retrieve raw spot price from model state
+    raw_spot_price = float(st.session_state.get("spot_price", 0.0))
+    position_allocation = float(st.session_state.get("var_position_size", 0.0))
+
+    if "NGN" in active_currency_mode:
+        curr_symbol = "₦"
+        formatted_asset_pair = active_asset.replace("-USD", "-NGN")
+        
+        # If the incoming spot price is in USD, convert to NGN
+        # Example: $82,214.98 * 1,500 = ₦123,322,470.00 / BTC
+        if raw_spot_price < 500000.0:  # Threshold to detect USD price input
+            execution_price = raw_spot_price * usd_to_ngn_rate
+        else:
+            execution_price = raw_spot_price
+    else:
+        curr_symbol = "$"
+        formatted_asset_pair = active_asset.replace("-NGN", "-USD")
+        execution_price = raw_spot_price
+
+    # 3. Prevent DivisionByZero & calculate true position units
+    if execution_price > 0:
+        allocated_units = position_allocation / execution_price
+    else:
+        allocated_units = 0.0
+
+    # 4. Construct production audit ledger record
+    audit_record = {
+        "Timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "Type": f"BUY ({active_venue})",
+        "Asset": formatted_asset_pair,
+        f"Price ({curr_symbol})": round(execution_price, 2),
+        f"Amount ({curr_symbol})": round(position_allocation, 2),
+        "Units": round(allocated_units, 8)
+    }
+
+    # 5. Thread-safe appending to session state ledger
+    if "execution_logs" not in st.session_state:
+        st.session_state["execution_logs"] = []
+
+    st.session_state["execution_logs"].append(audit_record)
+
+except Exception as e:
+        st.warning(f"Audit Logging Warning: {str(e)}")
         with st.expander("📜 Virtual Execution Audit Trail & Order History"):
             trade_df = pd.DataFrame(portfolio["trade_history"])
             st.dataframe(trade_df, use_container_width=True)
