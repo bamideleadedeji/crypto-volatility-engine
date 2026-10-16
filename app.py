@@ -1,5 +1,6 @@
 import sys
 import os
+import requests
 
 # ----------------------------------------------------------------------
 # 0. Global Path & Environment Configuration (Must execute first)
@@ -100,6 +101,19 @@ try:
 except Exception:
     HAS_BYBIT_EXEC = False
 
+# Safe import for Luno Ticker Integration
+def get_luno_portfolio_value(btc_holdings: float = 0.00035) -> dict:
+    try:
+        url = "https://api.luno.com/api/1/ticker?pair=XBTNGN"
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        last_price_ngn = float(data.get("last_trade", 0.0))
+        total_ngn_value = btc_holdings * last_price_ngn if last_price_ngn > 0 else 5623.00
+        return {"btc_price_ngn": last_price_ngn, "portfolio_ngn": total_ngn_value, "status": "SUCCESS"}
+    except Exception as e:
+        return {"btc_price_ngn": 0.0, "portfolio_ngn": 5623.00, "status": f"FALLBACK: {str(e)}"}
+
 # ----------------------------------------------------------------------
 # Page Configuration & Theme Setup
 # ----------------------------------------------------------------------
@@ -121,6 +135,14 @@ if "paper_portfolio" not in st.session_state:
 # Header & Metadata
 st.title("📈 Crypto Volatility Forecasting & Quantitative Risk Suite")
 st.caption("Institutional Multi-Model Benchmarking Engine (GARCH vs. GJR-GARCH vs. EGARCH vs. LSTM vs. Transformer) with Automated Risk Alerts")
+
+# Live Luno Account Tracker Bar
+luno_data = get_luno_portfolio_value()
+luno_col1, luno_col2, luno_col3 = st.columns(3)
+luno_col1.metric("Luno BTC/NGN Spot Ticker", f"₦{luno_data['btc_price_ngn']:,.2f}" if luno_data['btc_price_ngn'] > 0 else "₦0.00")
+luno_col2.metric("Active Luno Portfolio Value", f"₦{luno_data['portfolio_ngn']:,.2f}")
+luno_col3.metric("Micro-Capital Allocation", "100% BTC")
+
 st.divider()
 
 # Sidebar Controls
@@ -128,9 +150,18 @@ st.sidebar.header("🕹️ Institutional Controls")
 symbol = st.sidebar.selectbox(
     "Asset Identifier", ["BTC-USD", "ETH-USD", "SOL-USD"], index=0
 )
-capital = st.sidebar.number_input(
-    "Portfolio Capital ($USD)", value=10000.0, step=1000.0, format="%.2f"
-)
+
+currency_mode = st.sidebar.radio("Base Currency Context", ["USD ($)", "NGN (₦)"])
+curr_symbol = "₦" if currency_mode == "NGN (₦)" else "$"
+
+if currency_mode == "NGN (₦)":
+    capital = st.sidebar.number_input("Portfolio Capital (NGN)", value=5623.00, step=500.0, format="%.2f")
+    default_alert_var = round(capital * 0.035, 2)
+    alert_var_limit = st.sidebar.number_input("Max Allowable 1-Day VaR (NGN)", value=default_alert_var, step=10.0)
+else:
+    capital = st.sidebar.number_input("Portfolio Capital ($USD)", value=10000.0, step=1000.0, format="%.2f")
+    alert_var_limit = st.sidebar.number_input("Max Allowable 1-Day VaR ($USD)", value=500.0, step=50.0)
+
 confidence_level = st.sidebar.slider(
     "VaR Confidence Level (%)", min_value=90.0, max_value=99.0, value=95.0, step=1.0
 ) / 100.0
@@ -141,7 +172,6 @@ epochs = st.sidebar.number_input(
 st.sidebar.divider()
 st.sidebar.header("🚨 Automated Risk Alert Limits")
 alert_vol_limit = st.sidebar.slider("Max Allowable Daily Volatility (%)", 1.0, 10.0, 5.0, 0.5)
-alert_var_limit = st.sidebar.number_input("Max Allowable 1-Day VaR ($USD)", value=500.0, step=50.0)
 
 st.sidebar.divider()
 st.sidebar.info("💡 **Consultant Note:** Benchmarks symmetric & asymmetric econometrics against deep learning architectures to optimize risk-weighted capital allocation.")
@@ -283,8 +313,8 @@ if st.session_state["analytics_results"] is not None:
     m1.metric("Spot Price", f"${latest_price:,.2f}")
     m2.metric("GARCH(1,1) Vol", f"{latest_garch_vol*100:.2f}%")
     m3.metric("GJR-GARCH Vol", f"{latest_gjr_vol*100:.2f}%")
-    m4.metric("1-Day Parametric VaR", risk_summary.get("one_day_95pct_VaR", "N/A"))
-    m5.metric("Target Max Allocation", risk_summary.get("recommended_position_usd", "N/A"))
+    m4.metric("1-Day Parametric VaR", f"{curr_symbol}{risk_summary.get('one_day_95pct_VaR', '0').replace('$', '')}")
+    m5.metric("Target Max Allocation", f"{curr_symbol}{risk_summary.get('recommended_position_usd', '0').replace('$', '')}")
 
     # Automated Risk Threshold Audit Banner
     if HAS_ALERT_ENGINE:
@@ -305,7 +335,7 @@ if st.session_state["analytics_results"] is not None:
         if alert_res["status"] == "ALERT":
             st.error(f"🚨 **RISK THRESHOLD BREACH DETECTED:**\n\n" + "\n".join(alert_res["alerts_triggered"]))
         else:
-            st.success(f"✅ **Risk Status Normal:** Predicted Volatility ({latest_gjr_vol*100:.2f}%) and 1-Day VaR (${var_val_usd:,.2f}) are within specified limits.")
+            st.success(f"✅ **Risk Status Normal:** Predicted Volatility ({latest_gjr_vol*100:.2f}%) and 1-Day VaR ({curr_symbol}{var_val_usd:,.2f}) are within specified limits.")
 
     st.divider()
 
@@ -361,11 +391,11 @@ if st.session_state["analytics_results"] is not None:
     st.subheader("🛡️ Executive Risk-Targeted Position Sizing Framework & Alerts")
     r1, r2 = st.columns([1, 1])
     with r1:
-        st.write(f"• **Portfolio Capital:** `${current_capital:,.2f}`")
+        st.write(f"• **Portfolio Capital:** `{curr_symbol}{current_capital:,.2f}`")
         st.write(f"• **Predicted Daily Volatility (GJR-GARCH):** `{risk_summary.get('predicted_daily_volatility', 'N/A')}`")
-        st.write(f"• **1-Day 95% Value-at-Risk (VaR):** `{risk_summary.get('one_day_95pct_VaR', 'N/A')}`")
-        st.write(f"• **Maximum Allowable Risk Budget:** `{risk_summary.get('max_allowed_risk_usd', 'N/A')}`")
-        st.write(f"• **Recommended Allocation Cap:** `{risk_summary.get('recommended_position_usd', 'N/A')}`")
+        st.write(f"• **1-Day 95% Value-at-Risk (VaR):** `{curr_symbol}{str(risk_summary.get('one_day_95pct_VaR', 'N/A')).replace('$', '')}`")
+        st.write(f"• **Maximum Allowable Risk Budget:** `{curr_symbol}{str(risk_summary.get('max_allowed_risk_usd', 'N/A')).replace('$', '')}`")
+        st.write(f"• **Recommended Allocation Cap:** `{curr_symbol}{str(risk_summary.get('recommended_position_usd', 'N/A')).replace('$', '')}`")
 
         # Telegram Alert Dispatcher
         if HAS_ALERT_ENGINE:
@@ -391,8 +421,8 @@ if st.session_state["analytics_results"] is not None:
         except Exception:
             rec_pos_val = current_capital * 0.2
         cash_val = max(0.0, current_capital - rec_pos_val)
-        alloc_df = pd.DataFrame({"Category": ["Target Position", "Risk Buffer"], "Amount ($)": [rec_pos_val, cash_val]})
-        fig_pie = px.pie(alloc_df, values="Amount ($)", names="Category", hole=0.4)
+        alloc_df = pd.DataFrame({"Category": ["Target Position", "Risk Buffer"], "Amount": [rec_pos_val, cash_val]})
+        fig_pie = px.pie(alloc_df, values="Amount", names="Category", hole=0.4)
         fig_pie.update_layout(height=280, margin=dict(l=20, r=20, t=30, b=20))
         st.plotly_chart(fig_pie, use_container_width=True)
 
@@ -552,12 +582,12 @@ if st.session_state["analytics_results"] is not None:
                 st.success("✅ Multi-Asset Covariance & VaR Sizing Complete!")
 
                 pv1, pv2, pv3, pv4 = st.columns(4)
-                pv1.metric("Portfolio Capital", f"${p_results['portfolio_capital']:,.2f}")
+                pv1.metric("Portfolio Capital", f"{curr_symbol}{p_results['portfolio_capital']:,.2f}")
                 pv2.metric("Portfolio Daily Vol", f"{p_results['portfolio_daily_vol_pct']:.2f}%")
-                pv3.metric(f"1-Day {p_results['confidence_level_pct']:.0f}% Portfolio VaR", f"${p_results['portfolio_var_usd']:,.2f}")
+                pv3.metric(f"1-Day {p_results['confidence_level_pct']:.0f}% Portfolio VaR", f"{curr_symbol}{p_results['portfolio_var_usd']:,.2f}")
                 pv4.metric(
                     "Diversification Benefit", 
-                    f"${p_results['diversification_benefit_usd']:,.2f}",
+                    f"{curr_symbol}{p_results['diversification_benefit_usd']:,.2f}",
                     delta=f"{p_results['diversification_pct']:.2f}% Risk Reduction"
                 )
 
@@ -609,7 +639,7 @@ if st.session_state["analytics_results"] is not None:
         with st.expander("🛠️ Backtest Configuration & Controls", expanded=True):
             col1, col2, col3 = st.columns(3)
             with col1:
-                bt_capital = st.number_input("Initial Capital ($)", value=float(current_capital), step=1000.0)
+                bt_capital = st.number_input("Initial Capital", value=float(current_capital), step=1000.0)
             with col2:
                 bt_confidence = st.selectbox("VaR Confidence Level", [0.95, 0.99], index=0)
             with col3:
@@ -631,8 +661,8 @@ if st.session_state["analytics_results"] is not None:
                     st.success("✅ Backtest Analysis Completed!")
 
                     m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("Strategy Final Capital", f"${results['final_strategy_equity']:,}", f"{results['strategy_total_return_pct']}%")
-                    m2.metric("Buy & Hold Capital", f"${results['final_bh_equity']:,}", f"{results['buy_hold_total_return_pct']}%")
+                    m1.metric("Strategy Final Capital", f"{curr_symbol}{results['final_strategy_equity']:,}", f"{results['strategy_total_return_pct']}%")
+                    m2.metric("Buy & Hold Capital", f"{curr_symbol}{results['final_bh_equity']:,}", f"{results['buy_hold_total_return_pct']}%")
                     m3.metric("Sharpe Ratio", f"{results['strategy_sharpe']}")
                     m4.metric("Max Drawdown", f"{results['strategy_max_drawdown_pct']}%")
 
