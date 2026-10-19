@@ -1,7 +1,7 @@
 import os
+import csv
 import requests
 from requests.auth import HTTPBasicAuth
-import pandas as pd
 from datetime import datetime
 
 # ----------------------------------------------------------------------
@@ -13,7 +13,9 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 PAIR = "XBTNGN"
-SPLIT_RATIO = 0.50  # Hardcoded 50/50 Allocation Rule
+TARGET_RATIO = 0.50             # 50/50 BTC/NGN target allocation
+MIN_TRADE_NGN = 500.0           # Minimum NGN trade threshold (avoids invalid micro-orders)
+AUDIT_LOG_FILE = "luno_live_pilot_audit.csv"  # Dedicated live audit trail file
 
 # ----------------------------------------------------------------------
 # 2. Telegram Alert Dispatcher
@@ -32,11 +34,25 @@ def send_telegram_alert(message: str):
         print(f"❌ Telegram transmission error: {e}")
 
 # ----------------------------------------------------------------------
-# 3. LUNO Execution Engine
+# 3. Isolated Audit Logger
+# ----------------------------------------------------------------------
+def log_audit_entry(venue, pair, price_ngn, amount_ngn, units_btc, status, order_id="N/A"):
+    file_exists = os.path.isfile(AUDIT_LOG_FILE)
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    with open(AUDIT_LOG_FILE, mode='a', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(['Timestamp', 'Venue', 'Pair', 'Price_NGN', 'Amount_NGN', 'Units_BTC', 'Status', 'Order_ID'])
+        writer.writerow([timestamp, venue, pair, f"₦{price_ngn:,.2f}", f"₦{amount_ngn:,.2f}", f"{units_btc:.6f}", status, order_id])
+
+# ----------------------------------------------------------------------
+# 4. LUNO Execution Engine
 # ----------------------------------------------------------------------
 def execute_luno_5050_pilot():
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Executing Luno 50/50 Automated Pilot...")
-    
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"[{now_str}] Executing Luno 50/50 Automated Pilot Engine...")
+
     if not LUNO_KEY or not LUNO_SECRET:
         error_msg = "❌ Luno API credentials missing. Execution aborted."
         print(error_msg)
@@ -46,36 +62,81 @@ def execute_luno_5050_pilot():
     auth = HTTPBasicAuth(LUNO_KEY, LUNO_SECRET)
 
     try:
-        # A. Fetch NGN Balance
+        # A. Fetch Balances (NGN & BTC)
         bal_res = requests.get("https://api.luno.com/api/1/balance", auth=auth, timeout=10)
         bal_res.raise_for_status()
         balances = bal_res.json().get("balance", [])
-        
+
         ngn_balance = 0.0
+        btc_balance = 0.0
+
         for b in balances:
-            if b.get("asset") == "NGN":
+            asset = b.get("asset")
+            if asset == "NGN":
                 ngn_balance = float(b.get("balance", 0.0))
-                break
+            elif asset in ["XBT", "BTC"]:
+                btc_balance = float(b.get("balance", 0.0))
 
-        print(f"• Current Luno NGN Balance: ₦{ngn_balance:,.2f}")
+        # B. Fetch Current Market Price
+        ticker_res = requests.get(f"https://api.luno.com/api/1/ticker?pair={PAIR}", auth=auth, timeout=10)
+        ticker_res.raise_for_status()
+        btc_price = float(ticker_res.json().get("last_trade", 0.0))
 
-        if ngn_balance < 100.0:
-            msg = f"⚠️ Luno NGN balance too low to rebalance: ₦{ngn_balance:,.2f}"
-            print(msg)
+        if btc_price <= 0:
+            raise ValueError("Invalid BTC market price received from Luno ticker.")
+
+        btc_value_ngn = btc_balance * btc_price
+        total_portfolio_ngn = ngn_balance + btc_value_ngn
+        target_btc_value = total_portfolio_ngn * TARGET_RATIO
+
+        # Rebalance delta in NGN
+        rebalance_delta_ngn = target_btc_value - btc_value_ngn
+
+        print(f"• Luno NGN Balance: ₦{ngn_balance:,.2f}")
+        print(f"• Luno BTC Balance: {btc_balance:.6f} BTC (₦{btc_value_ngn:,.2f})")
+        print(f"• Total Portfolio Value: ₦{total_portfolio_ngn:,.2f}")
+        print(f"• Rebalance Delta NGN: ₦{rebalance_delta_ngn:,.2f}")
+
+        # C. Evaluate Minimum Order Threshold Guard
+        if abs(rebalance_delta_ngn) < MIN_TRADE_NGN:
+            msg = (
+                f"ℹ️ *LUNO 50/50 PILOT STATUS: BALANCED*\n\n"
+                f"• *Timestamp:* `{now_str}`\n"
+                f"• *Total Portfolio Value:* `₦{total_portfolio_ngn:,.2f}`\n"
+                f"• *NGN Buffer:* `₦{ngn_balance:,.2f}`\n"
+                f"• *BTC Value:* `₦{btc_value_ngn:,.2f}`\n"
+                f"• *Rebalance Delta:* `₦{rebalance_delta_ngn:,.2f}`\n"
+                f"• *Action:* Portfolio is within target 50/50 tolerance (< ₦{MIN_TRADE_NGN:,.2f}). No trade required. ✅"
+            )
+            print("Portfolio in balance. Skipping trade.")
+            log_audit_entry("Luno REST API", PAIR, btc_price, 0.0, 0.0, "HOLD_BALANCED")
             send_telegram_alert(msg)
             return
 
-        # B. Calculate 50/50 Trade Allocation
-        target_ngn_trade = round(ngn_balance * SPLIT_RATIO, 2)
-        remaining_fiat_buffer = round(ngn_balance - target_ngn_trade, 2)
+        # D. Execute Market Order with Strict Precision Formatting
+        if rebalance_delta_ngn > 0:
+            # BUY BTC using counter_volume (NGN amount as string)
+            trade_amount_ngn = min(rebalance_delta_ngn, ngn_balance)
+            order_payload = {
+                "pair": PAIR,
+                "type": "BUY",
+                "counter_volume": f"{trade_amount_ngn:.2f}"  # Clean string format
+            }
+            side_str = "BUY"
+            expected_units = trade_amount_ngn / btc_price
+        else:
+            # SELL BTC using volume (BTC unit amount as string)
+            trade_units_btc = abs(rebalance_delta_ngn) / btc_price
+            trade_units_btc = min(trade_units_btc, btc_balance)
+            order_payload = {
+                "pair": PAIR,
+                "type": "SELL",
+                "volume": f"{trade_units_btc:.6f}"  # Clean string format
+            }
+            side_str = "SELL"
+            trade_amount_ngn = trade_units_btc * btc_price
+            expected_units = trade_units_btc
 
-        # C. Post Immediate Market Buy Order to Luno
-        order_payload = {
-            "pair": PAIR,
-            "type": "BUY",
-            "counter_volume": f"{target_ngn_trade:.2f}"  # Spends exact NGN amount
-        }
-        
         order_res = requests.post("https://api.luno.com/api/1/postmarketorder", auth=auth, data=order_payload, timeout=10)
         order_data = order_res.json()
 
@@ -84,22 +145,24 @@ def execute_luno_5050_pilot():
             
             telegram_msg = (
                 f"🚨 *AUTOMATED LUNO 50/50 TRADE EXECUTED*\n\n"
-                f"• *Timestamp:* `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`\n"
+                f"• *Timestamp:* `{now_str}`\n"
                 f"• *Venue:* Luno REST API\n"
-                f"• *Pair:* `{PAIR}`\n"
-                f"• *Total Portfolio NGN:* `₦{ngn_balance:,.2f}`\n"
-                f"• *Allocated Order Size (50%):* `₦{target_ngn_trade:,.2f}`\n"
-                f"• *Fiat Cash Buffer:* `₦{remaining_fiat_buffer:,.2f}`\n"
+                f"• *Pair:* `{PAIR}` ({side_str})\n"
+                f"• *Execution Price:* `₦{btc_price:,.2f}`\n"
+                f"• *Trade Value:* `₦{trade_amount_ngn:,.2f}`\n"
+                f"• *Total Portfolio:* `₦{total_portfolio_ngn:,.2f}`\n"
                 f"• *Luno Order ID:* `{order_id}`\n"
                 f"• *Status:* SUCCESS ✅"
             )
-            print(f"✅ Order Executed Successfully! ID: {order_id}")
+            print(f"✅ Order Executed Successfully! Order ID: {order_id}")
+            log_audit_entry("Luno REST API", PAIR, btc_price, trade_amount_ngn, expected_units, "SUCCESS", order_id)
             send_telegram_alert(telegram_msg)
 
         else:
             err_msg = order_data.get("error", str(order_data))
             fail_msg = f"❌ *Luno Order Placement Failed*\nReason: `{err_msg}`"
             print(fail_msg)
+            log_audit_entry("Luno REST API", PAIR, btc_price, trade_amount_ngn, expected_units, f"FAILED: {err_msg}")
             send_telegram_alert(fail_msg)
 
     except Exception as ex:
