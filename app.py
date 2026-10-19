@@ -200,7 +200,6 @@ venue_toggle = st.sidebar.radio(
 
 usd_ngn_fx = float(st.secrets.get("USD_NGN_RATE", 1500.0))
 if luno_data['btc_price_ngn'] > 0:
-    # Calculate live implicit implied rate using Luno spot / USD estimate if available
     implied_rate = luno_data['btc_price_ngn'] / 82000.0
     if implied_rate > 1000.0:
         usd_ngn_fx = implied_rate
@@ -543,7 +542,6 @@ if st.session_state["analytics_results"] is not None:
                     try:
                         auth = HTTPBasicAuth(luno_key, luno_secret)
                         luno_pair = "XBTNGN"
-                        btc_volume = round(allocated_units, 6)
                         
                         payload = {
                             "pair": luno_pair,
@@ -552,13 +550,20 @@ if st.session_state["analytics_results"] is not None:
                         }
                         
                         res = requests.post("https://api.luno.com/api/1/postmarketorder", auth=auth, data=payload, timeout=10)
-                        res_data = res.json()
                         
-                        if "order_id" in res_data:
-                            order_msg = f"Market Buy Order executed on Luno! Order ID: {res_data['order_id']}"
+                        # SAFE CHECK: Ensure HTTP 200 and non-empty response body before parsing JSON
+                        if res.status_code == 200 and res.text and res.text.strip():
+                            res_data = res.json()
+                            if "order_id" in res_data:
+                                order_msg = f"Market Buy Order executed on Luno! Order ID: {res_data['order_id']}"
+                            else:
+                                order_status = "WARNING"
+                                order_msg = f"Luno API Message: {res_data.get('error', str(res_data))}"
                         else:
                             order_status = "WARNING"
-                            order_msg = f"Luno API Message: {res_data.get('error', str(res_data))}"
+                            clean_resp = res.text.strip() if res.text else "Empty response body"
+                            order_msg = f"Luno API HTTP {res.status_code}: {clean_resp[:120]}"
+
                     except Exception as api_err:
                         order_status = "WARNING"
                         order_msg = f"Luno REST API Call Error: {str(api_err)}"
