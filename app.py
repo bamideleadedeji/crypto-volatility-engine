@@ -1,5 +1,6 @@
 import sys
 import os
+import csv
 import requests
 import gc
 import numpy as np
@@ -102,17 +103,50 @@ except Exception:
     HAS_BYBIT_EXEC = False
 
 # Safe import for Luno Ticker Integration
-def get_luno_portfolio_value(btc_holdings: float = 0.00035) -> dict:
+def get_luno_portfolio_value() -> dict:
     try:
         url = "https://api.luno.com/api/1/ticker?pair=XBTNGN"
         response = requests.get(url, timeout=5)
         response.raise_for_status()
         data = response.json()
         last_price_ngn = float(data.get("last_trade", 0.0))
-        total_ngn_value = btc_holdings * last_price_ngn if last_price_ngn > 0 else 5623.00
+        
+        # Fetch balances dynamically if API credentials exist
+        luno_key = st.secrets.get("LUNO_API_KEY_ID") or os.environ.get("LUNO_API_KEY_ID")
+        luno_secret = st.secrets.get("LUNO_API_KEY_SECRET") or os.environ.get("LUNO_API_KEY_SECRET")
+        
+        total_ngn_value = 5623.00
+        if luno_key and luno_secret:
+            try:
+                auth = HTTPBasicAuth(luno_key, luno_secret)
+                bal_res = requests.get("https://api.luno.com/api/1/balance", auth=auth, timeout=5)
+                if bal_res.status_code == 200:
+                    b_data = bal_res.json().get("balance", [])
+                    ngn_bal = 0.0
+                    btc_bal = 0.0
+                    for b in b_data:
+                        if b.get("asset") == "NGN":
+                            ngn_bal = float(b.get("balance", 0.0))
+                        elif b.get("asset") in ["XBT", "BTC"]:
+                            btc_bal = float(b.get("balance", 0.0))
+                    total_ngn_value = ngn_bal + (btc_bal * last_price_ngn)
+            except Exception:
+                pass
+                
         return {"btc_price_ngn": last_price_ngn, "portfolio_ngn": total_ngn_value, "status": "SUCCESS"}
     except Exception as e:
         return {"btc_price_ngn": 0.0, "portfolio_ngn": 5623.00, "status": f"FALLBACK: {str(e)}"}
+
+# Helper function for isolated persistent audit logging
+def append_isolated_audit_log(venue, asset, price_str, amount_str, units_str, status):
+    log_filename = "luno_live_pilot_audit.csv" if "Luno" in venue else "bybit_paper_trading_audit.csv"
+    file_exists = os.path.isfile(log_filename)
+    
+    with open(log_filename, mode='a', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(['Timestamp', 'Venue', 'Asset', 'Price', 'Amount', 'Units', 'Status'])
+        writer.writerow([pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"), venue, asset, price_str, amount_str, units_str, status])
 
 # ----------------------------------------------------------------------
 # Page Configuration & Theme Setup
@@ -165,6 +199,12 @@ venue_toggle = st.sidebar.radio(
 )
 
 usd_ngn_fx = float(st.secrets.get("USD_NGN_RATE", 1500.0))
+if luno_data['btc_price_ngn'] > 0:
+    # Calculate live implicit implied rate using Luno spot / USD estimate if available
+    implied_rate = luno_data['btc_price_ngn'] / 82000.0
+    if implied_rate > 1000.0:
+        usd_ngn_fx = implied_rate
+
 st.session_state["usd_ngn_rate"] = usd_ngn_fx
 
 if currency_mode == "NGN (₦)":
@@ -278,7 +318,7 @@ if run_analytics or st.session_state["analytics_results"] is None:
         lstm_series = (lstm_vol.iloc[-min_len:] * 100).astype("float32")
         trans_series = (trans_vol.iloc[-min_len:] * 100).astype("float32")
 
-        latest_price = float(df["Close"].iloc[-1])
+        latest_price_usd = float(df["Close"].iloc[-1])
         latest_garch_vol = float(garch_vol.iloc[-1])
         latest_gjr_vol = float(gjr_vol.iloc[-1]) if HAS_ASYMMETRIC_GARCH else latest_garch_vol
 
@@ -295,7 +335,7 @@ if run_analytics or st.session_state["analytics_results"] is None:
             "egarch_series": egarch_series,
             "lstm_series": lstm_series,
             "trans_series": trans_series,
-            "latest_price": latest_price,
+            "latest_price": latest_price_usd,
             "latest_garch_vol": latest_garch_vol,
             "latest_gjr_vol": latest_gjr_vol,
             "gjr_params": gjr_params,
@@ -318,7 +358,7 @@ if st.session_state["analytics_results"] is not None:
     egarch_series = res.get("egarch_series", garch_series)
     lstm_series = res["lstm_series"]
     trans_series = res["trans_series"]
-    latest_price = res["latest_price"]
+    latest_price_usd = res["latest_price"]
     latest_garch_vol = res["latest_garch_vol"]
     latest_gjr_vol = res.get("latest_gjr_vol", latest_garch_vol)
     risk_summary = res["risk_summary"]
@@ -326,8 +366,17 @@ if st.session_state["analytics_results"] is not None:
     current_symbol = res["symbol"]
     current_capital = res["capital"]
 
+    # Calibrate currency price for display
+    if currency_mode == "NGN (₦)":
+        if luno_data['btc_price_ngn'] > 0 and "BTC" in current_symbol:
+            display_spot = luno_data['btc_price_ngn']
+        else:
+            display_spot = latest_price_usd * usd_ngn_fx
+    else:
+        display_spot = latest_price_usd
+
     # Store spot price & position allocation for execution
-    st.session_state["spot_price"] = latest_price
+    st.session_state["spot_price"] = display_spot
     rec_pos_val_str = str(risk_summary.get("recommended_position_usd", "$0")).replace("$", "").replace(",", "")
     try:
         st.session_state["var_position_size"] = float(rec_pos_val_str)
@@ -337,7 +386,7 @@ if st.session_state["analytics_results"] is not None:
     # Section 1: Executive Key Metrics
     st.subheader("📌 Executive Risk & Volatility Dashboard")
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Spot Price", f"${latest_price:,.2f}")
+    m1.metric("Spot Price", f"{curr_symbol}{display_spot:,.2f}")
     m2.metric("GARCH(1,1) Vol", f"{latest_garch_vol*100:.2f}%")
     m3.metric("GJR-GARCH Vol", f"{latest_gjr_vol*100:.2f}%")
     m4.metric("1-Day Parametric VaR", f"{curr_symbol}{risk_summary.get('one_day_95pct_VaR', '0').replace('$', '')}")
@@ -347,13 +396,13 @@ if st.session_state["analytics_results"] is not None:
     if HAS_ALERT_ENGINE:
         var_str_val = str(risk_summary.get("one_day_95pct_VaR", "$0")).replace("$", "").replace(",", "")
         try:
-            var_val_usd = float(var_str_val)
+            var_val_num = float(var_str_val)
         except Exception:
-            var_val_usd = 0.0
+            var_val_num = 0.0
             
         alert_res = check_risk_alerts(
             predicted_vol=latest_gjr_vol,
-            portfolio_var_usd=var_val_usd,
+            portfolio_var_usd=var_val_num,
             vol_threshold_pct=float(alert_vol_limit),
             var_threshold_usd=float(alert_var_limit),
             symbol=current_symbol
@@ -362,7 +411,7 @@ if st.session_state["analytics_results"] is not None:
         if alert_res["status"] == "ALERT":
             st.error(f"🚨 **RISK THRESHOLD BREACH DETECTED:**\n\n" + "\n".join(alert_res["alerts_triggered"]))
         else:
-            st.success(f"✅ **Risk Status Normal:** Predicted Volatility ({latest_gjr_vol*100:.2f}%) and 1-Day VaR ({curr_symbol}{var_val_usd:,.2f}) are within specified limits.")
+            st.success(f"✅ **Risk Status Normal:** Predicted Volatility ({latest_gjr_vol*100:.2f}%) and 1-Day VaR ({curr_symbol}{var_val_num:,.2f}) are within specified limits.")
 
     st.divider()
 
@@ -390,7 +439,7 @@ if st.session_state["analytics_results"] is not None:
     with tab_table:
         diag_df = pd.DataFrame({
             "Date": plot_dates[-15:].strftime("%Y-%m-%d"),
-            "Asset Spot ($)": df["Close"].iloc[-15:].values,
+            f"Asset Spot ({curr_symbol})": (df["Close"].iloc[-15:].values * usd_ngn_fx) if currency_mode == "NGN (₦)" else df["Close"].iloc[-15:].values,
             "Log Return (%)": df["Log_Return"].iloc[-15:].values * 100,
             "GARCH Vol (%)": garch_series.iloc[-15:].values,
             "GJR-GARCH Vol (%)": gjr_series.iloc[-15:].values,
@@ -399,7 +448,7 @@ if st.session_state["analytics_results"] is not None:
             "Transformer Vol (%)": trans_series.iloc[-15:].values
         })
         st.dataframe(diag_df.style.format({
-            "Asset Spot ($)": "${:,.2f}", "Log Return (%)": "{:+.2f}%",
+            f"Asset Spot ({curr_symbol})": curr_symbol + "{:,.2f}", "Log Return (%)": "{:+.2f}%",
             "GARCH Vol (%)": "{:.2f}%", "GJR-GARCH Vol (%)": "{:.2f}%", "EGARCH Vol (%)": "{:.2f}%",
             "LSTM Vol (%)": "{:.2f}%", "Transformer Vol (%)": "{:.2f}%"
         }), use_container_width=True)
@@ -466,20 +515,17 @@ if st.session_state["analytics_results"] is not None:
             active_venue = st.session_state.get("venue_toggle", "Paper")
             
             usd_to_ngn_rate = float(st.session_state.get("usd_ngn_rate", 1500.0))
-            raw_spot_price = float(st.session_state.get("spot_price", 82214.98))
+            raw_spot_price = float(st.session_state.get("spot_price", 111500034.0))
             var_allocated_cap = float(st.session_state.get("var_position_size", 3574.28))
 
             if "NGN" in active_currency_mode:
                 c_symbol = "₦"
                 formatted_asset = active_asset.replace("-USD", "-NGN")
-                if raw_spot_price > 0 and raw_spot_price < 500000.0:
-                    execution_price = raw_spot_price * usd_to_ngn_rate
-                else:
-                    execution_price = raw_spot_price if raw_spot_price > 0 else (82214.98 * usd_to_ngn_rate)
+                execution_price = raw_spot_price
             else:
                 c_symbol = "$"
                 formatted_asset = active_asset.replace("-NGN", "-USD")
-                execution_price = raw_spot_price if raw_spot_price > 0 else 82214.98
+                execution_price = raw_spot_price / usd_to_ngn_rate if raw_spot_price > 100000.0 else raw_spot_price
 
             if execution_price > 0:
                 allocated_units = var_allocated_cap / execution_price
@@ -496,22 +542,20 @@ if st.session_state["analytics_results"] is not None:
                 else:
                     try:
                         auth = HTTPBasicAuth(luno_key, luno_secret)
-                        luno_pair = "XBTNGN" if "NGN" in active_currency_mode else "XBTUSD"
+                        luno_pair = "XBTNGN"
                         btc_volume = round(allocated_units, 6)
                         
                         payload = {
                             "pair": luno_pair,
-                            "type": "BID",
-                            "volume": f"{btc_volume:.6f}",
-                            "price": f"{execution_price:.2f}",
-                            "post_only": True
+                            "type": "BUY",
+                            "counter_volume": f"{var_allocated_cap:.2f}"
                         }
                         
-                        res = requests.post("https://api.luno.com/api/1/postorder", auth=auth, data=payload, timeout=5)
+                        res = requests.post("https://api.luno.com/api/1/postmarketorder", auth=auth, data=payload, timeout=10)
                         res_data = res.json()
                         
                         if "order_id" in res_data:
-                            order_msg = f"Post-Only Limit Order placed on Luno! Order ID: {res_data['order_id']}"
+                            order_msg = f"Market Buy Order executed on Luno! Order ID: {res_data['order_id']}"
                         else:
                             order_status = "WARNING"
                             order_msg = f"Luno API Message: {res_data.get('error', str(res_data))}"
@@ -542,6 +586,7 @@ if st.session_state["analytics_results"] is not None:
             }
 
             st.session_state["execution_logs"].insert(0, audit_entry)
+            append_isolated_audit_log(active_venue, formatted_asset, f"{c_symbol}{execution_price:,.2f}", f"{c_symbol}{var_allocated_cap:,.2f}", f"{allocated_units:.8f}", order_status)
 
             if order_status == "SUCCESS":
                 st.success(f"✅ Rebalance Order Processed! {order_msg}")
