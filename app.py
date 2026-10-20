@@ -549,7 +549,8 @@ if st.session_state["analytics_results"] is not None:
                             "counter_volume": f"{var_allocated_cap:.2f}"
                         }
                         
-                        res = requests.post("https://api.luno.com/api/1/postmarketorder", auth=auth, data=payload, timeout=10)
+                        # CORRECTED ENDPOINT: /api/1/marketorder
+                        res = requests.post("https://api.luno.com/api/1/marketorder", auth=auth, data=payload, timeout=10)
                         
                         # SAFE CHECK: Ensure HTTP 200 and non-empty response body before parsing JSON
                         if res.status_code == 200 and res.text and res.text.strip():
