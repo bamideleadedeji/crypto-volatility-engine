@@ -31,3 +31,12 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python luno_cron_bot.py
+
+      - name: Commit & Push Audit Logs
+        if: always()
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]"
+          git add luno_live_pilot_audit.csv || true
+          git commit -m "auto: append luno trade execution log" || true
+          git push || true
