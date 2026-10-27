@@ -1,0 +1,2 @@
+Timestamp,Venue,Pair,Price_NGN,Amount_NGN,Units_BTC,Status,Order_ID
+2026-10-27 19:55:48,Luno REST API,XBTNGN,"₦111,393,641.00","₦5,112.05",0.000046,FAILED: HTTP 404: ,N/A
