@@ -9,6 +9,9 @@ on:
 jobs:
   run-luno-bot:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Fixes 403 Git push permission error
+
     steps:
       - name: Check out Repository
         uses: actions/checkout@v4
