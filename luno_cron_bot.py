@@ -13,8 +13,8 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 PAIR = "XBTNGN"
-TARGET_RATIO = 0.50             # 50/50 BTC/NGN target allocation
-MIN_TRADE_NGN = 500.0           # Minimum NGN trade threshold (avoids invalid micro-orders)
+TARGET_RATIO = 0.50          # 50/50 BTC/NGN target allocation
+MIN_TRADE_NGN = 500.0       # Minimum NGN trade threshold (avoids invalid micro-orders)
 AUDIT_LOG_FILE = "luno_live_pilot_audit.csv"  # Dedicated live audit trail file
 
 # ----------------------------------------------------------------------
@@ -120,7 +120,7 @@ def execute_luno_5050_pilot():
             order_payload = {
                 "pair": PAIR,
                 "type": "BUY",
-                "counter_volume": f"{trade_amount_ngn:.2f}"  # Clean string format
+                "counter_volume": f"{trade_amount_ngn:.2f}"
             }
             side_str = "BUY"
             expected_units = trade_amount_ngn / btc_price
@@ -131,16 +131,26 @@ def execute_luno_5050_pilot():
             order_payload = {
                 "pair": PAIR,
                 "type": "SELL",
-                "volume": f"{trade_units_btc:.6f}"  # Clean string format
+                "volume": f"{trade_units_btc:.6f}"
             }
             side_str = "SELL"
             trade_amount_ngn = trade_units_btc * btc_price
             expected_units = trade_units_btc
 
-        order_res = requests.post("https://api.luno.com/api/1/postmarketorder", auth=auth, data=order_payload, timeout=10)
-        order_data = order_res.json()
+        # Robust API Request Handling with params formatting
+        order_res = requests.post(
+            "https://api.luno.com/api/1/postmarketorder",
+            auth=auth,
+            params=order_payload,
+            timeout=15
+        )
+        
+        try:
+            order_data = order_res.json()
+        except Exception:
+            order_data = {"error": f"HTTP {order_res.status_code}: {order_res.text}"}
 
-        if "order_id" in order_data:
+        if order_res.status_code == 200 and "order_id" in order_data:
             order_id = order_data["order_id"]
             
             telegram_msg = (
@@ -159,7 +169,7 @@ def execute_luno_5050_pilot():
             send_telegram_alert(telegram_msg)
 
         else:
-            err_msg = order_data.get("error", str(order_data))
+            err_msg = order_data.get("error", order_res.text or str(order_data))
             fail_msg = f"❌ *Luno Order Placement Failed*\nReason: `{err_msg}`"
             print(fail_msg)
             log_audit_entry("Luno REST API", PAIR, btc_price, trade_amount_ngn, expected_units, f"FAILED: {err_msg}")
