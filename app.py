@@ -851,11 +851,12 @@ if st.session_state["analytics_results"] is not None:
                 "counter_volume": f"{var_allocated_cap:.2f}",
             }
 
-            # Luno market order endpoint URL with query params
+            # FIXED: Luno POST requests require form-encoded body parameters (`data=payload`),
+            # NOT URL query string parameters (`params=payload`).
             res = requests.post(
                 "https://api.luno.com/api/1/marketorder",
                 auth=auth,
-                params=payload,
+                data=payload,
                 timeout=10,
             )
 
@@ -1104,7 +1105,7 @@ if st.session_state["analytics_results"] is not None:
           )
 
         if results.get("status") == "SUCCESS":
-          st.success("✅ Backtest Analysis Completed📈 Backtest Analysis Completed!")
+          st.success("✅ Backtest Analysis Completed!")
 
           m1, m2, m3, m4 = st.columns(4)
           m1.metric(
