@@ -632,11 +632,11 @@ if st.session_state["analytics_results"] is not None:
         st.plotly_chart(fig_pie, use_container_width=True)
 
     # -------------------------------------------------------------
-    # Section 4: Nigerian Market Multi-Asset Basket Rebalance & Risk Guards
+    # Section 4: Sequential Tranche Rebalance & Liquidity Holding Guard
     # -------------------------------------------------------------
     st.divider()
-    st.subheader("⚡ Section 4: Nigerian Market Multi-Asset Basket Rebalance & Risk Guards")
-    st.caption("Executes simultaneous rebalancing across Luno Native Naira Pairs: XBTNGN (50%), ETHNGN (30%), SOLNGN (20%).")
+    st.subheader("⚡ Section 4: Sequential Tranche Rebalance & Liquidity Holding Guard")
+    st.caption("Executes tranches sequentially (BTC -> ETH -> SOL). If cash is insufficient for a tranche, it holds until liquidity changes.")
 
     # Nigerian Native Pairing Matrix
     TARGET_WEIGHTS = {
@@ -650,99 +650,87 @@ if st.session_state["analytics_results"] is not None:
     col_w2.metric("ETHNGN Target Weight", "30%")
     col_w3.metric("SOLNGN Target Weight", "20%")
 
-    if st.button("📥 Execute Nigerian Market Basket Rebalance (All-or-Nothing)", key="btn_execute_multi_rebalance", use_container_width=True):
+    if st.button("📥 Execute Sequential Tranche Rebalance", key="btn_execute_sequential_rebalance", use_container_width=True):
         try:
             active_venue = st.session_state.get("venue_toggle", "Luno Live (Real Capital)")
-            available_liquid_cash = float(luno_data["ngn_balance"]) # ₦32,874.62
-            total_portfolio_val = float(luno_data["portfolio_ngn"]) # ₦53,837.00
+            available_liquid_cash = float(luno_data["ngn_balance"]) 
+            total_portfolio_val = float(luno_data["portfolio_ngn"]) 
 
-            # Current holdings in NGN across Luno native pairs
             current_holdings = {
                 "XBTNGN": luno_data["btc_balance"] * luno_data["btc_price_ngn"],
                 "ETHNGN": 0.0,
                 "SOLNGN": 0.0
             }
 
-            orders_to_execute = []
+            executed_tranches = []
+            remaining_cash = available_liquid_cash
+
+            luno_key = st.secrets.get("LUNO_API_KEY_ID") or os.environ.get("LUNO_API_KEY_ID")
+            luno_secret = st.secrets.get("LUNO_API_KEY_SECRET") or os.environ.get("LUNO_API_KEY_SECRET")
+
             for asset, weight in TARGET_WEIGHTS.items():
                 target_val = total_portfolio_val * weight
                 current_val = current_holdings.get(asset, 0.0)
                 delta = target_val - current_val
 
-                if delta > 500.0:  # Minimum Luno trade threshold (₦500)
-                    orders_to_execute.append({"asset": asset, "action": "BUY", "amount_ngn": delta})
-                elif delta < -500.0:
-                    orders_to_execute.append({"asset": asset, "action": "SELL", "amount_ngn": abs(delta)})
+                if delta > 500.0:  # Minimum Luno threshold (₦500)
+                    net_amount = risk_guard.calculate_net_allocation_with_fees(delta)
 
-            # ---------------------------------------------------------
-            # INSTITUTIONAL RISK GUARDS ENFORCEMENT
-            # ---------------------------------------------------------
-            # 1. All-or-Nothing Cash Gate Check via risk_guards module
-            basket_check = risk_guard.validate_all_or_nothing_basket(orders_to_execute, available_liquid_cash)
+                    if remaining_cash >= net_amount:
+                        order_status = "SUCCESS"
+                        order_id_str = "SEQUENTIAL_FILL"
 
-            if basket_check["status"] == "ABORTED":
-                st.warning(f"⚠️ {basket_check['reason']}")
-                append_isolated_audit_log(
-                    venue=active_venue,
-                    asset="NIGERIAN_BASKET_50_30_20",
-                    price_str="N/A",
-                    amount_str=f"₦{basket_check['required']:,.2f}",
-                    units_str="0.00",
-                    status="ABORTED: Insufficient Funds"
-                )
-            else:
-                # 2. Execute orders simultaneously on Luno Live REST API
-                success_msgs = []
-                luno_key = st.secrets.get("LUNO_API_KEY_ID") or os.environ.get("LUNO_API_KEY_ID")
-                luno_secret = st.secrets.get("LUNO_API_KEY_SECRET") or os.environ.get("LUNO_API_KEY_SECRET")
-
-                for order in orders_to_execute:
-                    net_amount = risk_guard.calculate_net_allocation_with_fees(order["amount_ngn"])
-                    order_status = "SUCCESS"
-                    order_id_str = "SIMULATED_FILL"
-
-                    if "Luno Live" in active_venue and luno_key and luno_secret:
-                        try:
-                            auth = HTTPBasicAuth(luno_key, luno_secret)
-                            payload = {
-                                "pair": order["asset"],
-                                "type": order["action"],
-                                "counter_volume": f"{net_amount:.2f}",
-                            }
-                            res = requests.post(
-                                "https://api.luno.com/api/1/marketorder",
-                                auth=auth,
-                                data=payload,
-                                timeout=10,
-                            )
-                            if res.status_code == 200 and res.text and res.text.strip():
-                                r_data = res.json()
-                                if "order_id" in r_data:
-                                    order_id_str = r_data["order_id"]
+                        if "Luno Live" in active_venue and luno_key and luno_secret:
+                            try:
+                                auth = HTTPBasicAuth(luno_key, luno_secret)
+                                payload = {
+                                    "pair": asset,
+                                    "type": "BUY",
+                                    "counter_volume": f"{net_amount:.2f}",
+                                }
+                                res = requests.post(
+                                    "https://api.luno.com/api/1/marketorder",
+                                    auth=auth,
+                                    data=payload,
+                                    timeout=10,
+                                )
+                                if res.status_code == 200 and res.text and res.text.strip():
+                                    r_data = res.json()
+                                    order_id_str = r_data.get("order_id", "FILLED")
                                 else:
-                                    order_status = "WARNING_API_MSG"
-                                    order_id_str = str(r_data.get("error", "Unknown Luno response"))
-                            else:
-                                order_status = f"HTTP_{res.status_code}"
-                                order_id_str = res.text[:100] if res.text else "Empty response"
-                        except Exception as api_ex:
-                            order_status = "API_ERROR"
-                            order_id_str = str(api_ex)
+                                    order_status = f"HTTP_{res.status_code}"
+                                    order_id_str = res.text[:100] if res.text else "Error"
+                            except Exception as api_ex:
+                                order_status = "API_ERROR"
+                                order_id_str = str(api_ex)
 
-                    append_isolated_audit_log(
-                        venue=active_venue,
-                        asset=order["asset"],
-                        price_str="Market",
-                        amount_str=f"₦{net_amount:,.2f}",
-                        units_str="Calculated",
-                        status=f"{order_status}: {order_id_str}"
-                    )
-                    success_msgs.append(f"{order['action']} {order['asset']} worth ₦{net_amount:,.2f} (Status: {order_status})")
+                        append_isolated_audit_log(
+                            venue=active_venue,
+                            asset=asset,
+                            price_str="Market",
+                            amount_str=f"₦{net_amount:,.2f}",
+                            units_str="Calculated",
+                            status=f"{order_status}: {order_id_str}"
+                        )
+                        executed_tranches.append(f"✅ BUY {asset} worth ₦{net_amount:,.2f} [Executed]")
+                        remaining_cash -= net_amount
+                    else:
+                        msg = f"⏳ HOLD: Insufficient cash for {asset} tranche (Required: ₦{net_amount:,.2f}, Available Cash: ₦{remaining_cash:,.2f}). Holding until liquidity changes."
+                        append_isolated_audit_log(
+                            venue=active_venue,
+                            asset=asset,
+                            price_str="N/A",
+                            amount_str=f"₦{net_amount:,.2f}",
+                            units_str="0.00",
+                            status="HOLD: Insufficient Tranche Liquidity"
+                        )
+                        executed_tranches.append(msg)
+                        break
 
-                st.success("✅ Nigerian Market Multi-Asset Basket Rebalance Executed Successfully!\n\n" + "\n".join(success_msgs))
+            st.success("📊 Sequential Tranche Execution Report:\n\n" + "\n".join(executed_tranches))
 
-        except Exception as multi_err:
-            st.error(f"🚨 Nigerian Market Execution Exception: {str(multi_err)}")
+        except Exception as seq_err:
+            st.error(f"🚨 Sequential Execution Exception: {str(seq_err)}")
 
     # Isolated Persistent Audit Inspection Tabs
     st.markdown("### 📜 Persistent Audit Ledger Isolation Inspection")
