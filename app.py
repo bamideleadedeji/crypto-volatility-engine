@@ -39,7 +39,7 @@ from src.garch_model import fit_garch_model
 from src.risk_engine import calculate_position_size
 from risk_guards import InstitutionalRiskGuards
 
-# Initialize Institutional Risk Guards
+# Initialize Institutional Risk Guards (with optimized fee buffer tolerance)
 risk_guard = InstitutionalRiskGuards(max_slippage_pct=0.015, max_drawdown_pct=0.05, fee_buffer_pct=0.005)
 
 # Safe import for Automated Risk Alert Engine
@@ -636,7 +636,7 @@ if st.session_state["analytics_results"] is not None:
     # -------------------------------------------------------------
     st.divider()
     st.subheader("⚡ Section 4: Sequential Tranche Rebalance & Liquidity Holding Guard")
-    st.caption("Executes tranches sequentially (BTC -> ETH -> SOL). If cash is insufficient for a tranche, it holds until liquidity changes.")
+    st.caption("Executes tranches sequentially (BTC -> ETH -> SOL) with a fee tolerance guard to prevent micro-deficit order stalls.")
 
     # Nigerian Native Pairing Matrix
     TARGET_WEIGHTS = {
@@ -676,17 +676,22 @@ if st.session_state["analytics_results"] is not None:
                 if delta > 500.0:  # Minimum Luno threshold (₦500)
                     net_amount = risk_guard.calculate_net_allocation_with_fees(delta)
 
-                    if remaining_cash >= net_amount:
+                    # Tolerance guard: allow execution if cash is within a negligible 0.5% dust margin of required net amount
+                    effective_cash = remaining_cash * 1.005
+
+                    if effective_cash >= net_amount:
                         order_status = "SUCCESS"
                         order_id_str = "SEQUENTIAL_FILL"
 
                         if "Luno Live" in active_venue and luno_key and luno_secret:
                             try:
                                 auth = HTTPBasicAuth(luno_key, luno_secret)
+                                # Cap counter_volume to strictly available spendable cash if within dust threshold
+                                execution_amount = min(net_amount, remaining_cash)
                                 payload = {
                                     "pair": asset,
                                     "type": "BUY",
-                                    "counter_volume": f"{net_amount:.2f}",
+                                    "counter_volume": f"{execution_amount:.2f}",
                                 }
                                 res = requests.post(
                                     "https://api.luno.com/api/1/marketorder",
@@ -714,6 +719,8 @@ if st.session_state["analytics_results"] is not None:
                         )
                         executed_tranches.append(f"✅ BUY {asset} worth ₦{net_amount:,.2f} [Executed]")
                         remaining_cash -= net_amount
+                        if remaining_cash < 0:
+                            remaining_cash = 0.0
                     else:
                         msg = f"⏳ HOLD: Insufficient cash for {asset} tranche (Required: ₦{net_amount:,.2f}, Available Cash: ₦{remaining_cash:,.2f}). Holding until liquidity changes."
                         append_isolated_audit_log(
