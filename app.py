@@ -738,9 +738,9 @@ if st.session_state["analytics_results"] is not None:
                                 "volume": vol_format,
                             }
                             res = requests.post(
-                                "https://api.luno.com/api/1/marketorder",
+                                "https://api.luno.com/api/1/postmarketorder",
                                 auth=auth,
-                                data=payload,
+                                params=payload,
                                 timeout=10,
                             )
                             if res.status_code == 200 and res.text and res.text.strip():
@@ -798,9 +798,9 @@ if st.session_state["analytics_results"] is not None:
                                         "counter_volume": f"{execution_amount:.2f}",
                                     }
                                     res = requests.post(
-                                        "https://api.luno.com/api/1/marketorder",
+                                        "https://api.luno.com/api/1/postmarketorder",
                                         auth=auth,
-                                        data=payload,
+                                        params=payload,
                                         timeout=10,
                                     )
                                     if res.status_code == 200 and res.text and res.text.strip():
@@ -836,11 +836,13 @@ if st.session_state["analytics_results"] is not None:
 
             if not action_logs:
                 st.success("✅ Portfolio drift is within limits. No rotation required.")
+                append_isolated_audit_log(active_venue, "PORTFOLIO", "N/A", "N/A", "N/A", "HOLD_BALANCED")
             else:
                 st.success("📊 Capped & Cooled Rotation Report (Total Trades Executed: " + str(trades_executed_count) + "):\n\n" + "\n".join(action_logs))
 
         except Exception as cap_err:
             st.error(f"🚨 Capped Rotation Exception: {str(cap_err)}")
+            append_isolated_audit_log("Luno Live", "SYSTEM", "N/A", "N/A", "N/A", f"EXCEPTION: {str(cap_err)}")
 
     # Isolated Persistent Audit Inspection Tabs
     st.markdown("### 📜 Persistent Audit Ledger Isolation Inspection")
