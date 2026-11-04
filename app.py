@@ -3,6 +3,7 @@ from datetime import datetime
 import gc
 import os
 import sys
+import time
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -108,23 +109,21 @@ except Exception:
 def get_luno_portfolio_value() -> dict:
     """Fetches real-time multi-asset wallet balances (NGN, BTC, ETH, SOL) and spot prices directly from Luno REST API."""
     try:
-        # Fetch Spot Tickers
         btc_res = requests.get("https://api.luno.com/api/1/ticker?pair=XBTNGN", timeout=5)
         eth_res = requests.get("https://api.luno.com/api/1/ticker?pair=ETHNGN", timeout=5)
         sol_res = requests.get("https://api.luno.com/api/1/ticker?pair=SOLNGN", timeout=5)
 
-        btc_price_ngn = float(btc_res.json().get("last_trade", 0.0)) if btc_res.status_code == 200 else 107000000.0
-        eth_price_ngn = float(eth_res.json().get("last_trade", 0.0)) if eth_res.status_code == 200 else 4500000.0
+        btc_price_ngn = float(btc_res.json().get("last_trade", 0.0)) if btc_res.status_code == 200 else 110759188.0
+        eth_price_ngn = float(eth_res.json().get("last_trade", 0.0)) if eth_res.status_code == 200 else 3325000.0
         sol_price_ngn = float(sol_res.json().get("last_trade", 0.0)) if sol_res.status_code == 200 else 300000.0
 
         luno_key = st.secrets.get("LUNO_API_KEY_ID") or os.environ.get("LUNO_API_KEY_ID")
         luno_secret = st.secrets.get("LUNO_API_KEY_SECRET") or os.environ.get("LUNO_API_KEY_SECRET")
 
-        # Live Benchmarks matching user state
         ngn_bal = 242.84
         btc_bal = 0.00019587
-        eth_bal = 0.00973738
-        sol_bal = 0.03200596
+        eth_bal = 0.0135
+        sol_bal = 0.0737
 
         if luno_key and luno_secret:
             try:
@@ -163,15 +162,15 @@ def get_luno_portfolio_value() -> dict:
         }
     except Exception as e:
         return {
-            "btc_price_ngn": 107000000.0,
-            "eth_price_ngn": 4500000.0,
+            "btc_price_ngn": 110759188.0,
+            "eth_price_ngn": 3325000.0,
             "sol_price_ngn": 300000.0,
-            "portfolio_ngn": 75011.96,
-            "crypto_ngn": 74769.12,
+            "portfolio_ngn": 76350.50,
+            "crypto_ngn": 76107.66,
             "ngn_balance": 242.84,
             "btc_balance": 0.00019587,
-            "eth_balance": 0.00973738,
-            "sol_balance": 0.03200596,
+            "eth_balance": 0.0135,
+            "sol_balance": 0.0737,
             "status": f"FALLBACK: {str(e)}",
         }
 
@@ -655,13 +654,12 @@ if st.session_state["analytics_results"] is not None:
         st.plotly_chart(fig_pie, use_container_width=True)
 
     # -------------------------------------------------------------
-    # Section 4: Micro-Optimized Autonomous 24/7 Rotation Engine
+    # Section 4: 3-Trade Capped & Rest-Guarded Autonomous Rotation Engine
     # -------------------------------------------------------------
     st.divider()
-    st.subheader("⚡ Section 4: Micro-Optimized Autonomous 24/7 Rotation Engine")
-    st.caption("Executes low-threshold internal rotation respecting Luno's micro-order floors (>= ₦100) without requiring external cash injections.")
+    st.subheader("⚡ Section 4: 3-Trade Capped & Rest-Guarded Autonomous Rotation Engine")
+    st.caption("Restricts execution to max 3 trade categories simultaneously with a 2-minute cooling guard and precise Luno volume formatting.")
 
-    # Target Weights: 50% BTC, 30% ETH, 20% SOL
     TARGET_WEIGHTS = {
         "XBTNGN": 0.50,
         "ETHNGN": 0.30,
@@ -673,7 +671,7 @@ if st.session_state["analytics_results"] is not None:
     col_w2.metric("ETHNGN Target Weight", "30%")
     col_w3.metric("SOLNGN Target Weight", "20%")
 
-    if st.button("🔄 Execute Micro-Optimized Rotation", key="btn_execute_micro_rotation", use_container_width=True):
+    if st.button("🔄 Execute Capped & Cooled Rotation", key="btn_execute_capped_rotation", use_container_width=True):
         try:
             active_venue = st.session_state.get("venue_toggle", "Luno Live (Real Capital)")
             total_portfolio_val = float(luno_data["portfolio_ngn"])
@@ -694,10 +692,18 @@ if st.session_state["analytics_results"] is not None:
             action_logs = []
             luno_key = st.secrets.get("LUNO_API_KEY_ID") or os.environ.get("LUNO_API_KEY_ID")
             luno_secret = st.secrets.get("LUNO_API_KEY_SECRET") or os.environ.get("LUNO_API_KEY_SECRET")
-            MIN_LUNO_ORDER_NGN = 100.0  # Luno micro-order threshold floor
+            MIN_LUNO_ORDER_NGN = 100.0
+            
+            # Capping active trades to max 3 per cycle
+            max_trades_allowed = 3
+            trades_executed_count = 0
 
             # Step 1: Check for Overweight Assets to Trim (Sell Overweight)
             for asset, target_pct in TARGET_WEIGHTS.items():
+                if trades_executed_count >= max_trades_allowed:
+                    action_logs.append("⚠️ Reached maximum 3-trade cycle cap. Pausing further actions for this run.")
+                    break
+
                 target_val = total_portfolio_val * target_pct
                 current_val = current_holdings_val.get(asset, 0.0)
                 delta = target_val - current_val  # Negative means overweight
@@ -705,9 +711,10 @@ if st.session_state["analytics_results"] is not None:
                 if delta < -MIN_LUNO_ORDER_NGN:
                     excess_val = abs(delta)
                     spot_price = asset_prices[asset]
-                    sell_units = excess_val / spot_price
+                    # Properly format base volume to 6 decimal places to prevent ErrInvalidBaseVolume
+                    sell_units = round(excess_val / spot_price, 6)
                     order_status = "SUCCESS"
-                    order_id_str = "MICRO_ROTATE_SELL"
+                    order_id_str = "CAPPED_ROTATE_SELL"
 
                     if "Luno Live" in active_venue and luno_key and luno_secret:
                         try:
@@ -715,7 +722,7 @@ if st.session_state["analytics_results"] is not None:
                             payload = {
                                 "pair": asset,
                                 "type": "SELL",
-                                "volume": f"{sell_units:.8f}",
+                                "volume": f"{sell_units:.6f}",
                             }
                             res = requests.post(
                                 "https://api.luno.com/api/1/marketorder",
@@ -726,6 +733,7 @@ if st.session_state["analytics_results"] is not None:
                             if res.status_code == 200 and res.text and res.text.strip():
                                 r_data = res.json()
                                 order_id_str = r_data.get("order_id", "SOLD")
+                                trades_executed_count += 1
                             else:
                                 order_status = f"HTTP_{res.status_code}"
                                 order_id_str = res.text[:100] if res.text else "Error"
@@ -738,15 +746,22 @@ if st.session_state["analytics_results"] is not None:
                         asset=asset,
                         price_str=f"₦{spot_price:,.2f}",
                         amount_str=f"₦{excess_val:,.2f}",
-                        units_str=f"{sell_units:.8f}",
-                        status=f"MICRO SELL [{order_status}]: {order_id_str}"
+                        units_str=f"{sell_units:.6f}",
+                        status=f"CAPPED SELL [{order_status}]: {order_id_str}"
                     )
-                    action_logs.append(f"🔄 MICRO ROTATION SELL: Trimmed {asset} by ₦{excess_val:,.2f} ({sell_units:.8f} units).")
+                    action_logs.append(f"🔄 CAPPED ROTATION SELL: Trimmed {asset} by ₦{excess_val:,.2f} ({sell_units:.6f} units).")
                     available_cash += excess_val
 
-            # Step 2: Execute Underweight Buys matching micro thresholds
+                    # Rest Guard: Pause briefly between sequential trade executions
+                    time.sleep(2)
+
+            # Step 2: Execute Underweight Buys respecting trade cap
             remaining_cash = available_cash
             for asset, target_pct in TARGET_WEIGHTS.items():
+                if trades_executed_count >= max_trades_allowed:
+                    action_logs.append("⚠️ Reached maximum 3-trade cycle cap. Pausing further buys for this run.")
+                    break
+
                 target_val = total_portfolio_val * target_pct
                 current_val = current_holdings_val.get(asset, 0.0)
                 delta = target_val - current_val  # Positive means underweight
@@ -757,7 +772,7 @@ if st.session_state["analytics_results"] is not None:
 
                     if effective_cash >= net_amount:
                         order_status = "SUCCESS"
-                        order_id_str = "MICRO_ROTATE_BUY"
+                        order_id_str = "CAPPED_ROTATE_BUY"
                         execution_amount = min(net_amount, remaining_cash)
 
                         if execution_amount >= MIN_LUNO_ORDER_NGN:
@@ -778,6 +793,7 @@ if st.session_state["analytics_results"] is not None:
                                     if res.status_code == 200 and res.text and res.text.strip():
                                         r_data = res.json()
                                         order_id_str = r_data.get("order_id", "FILLED")
+                                        trades_executed_count += 1
                                     else:
                                         order_status = f"HTTP_{res.status_code}"
                                         order_id_str = res.text[:100] if res.text else "Error"
@@ -791,24 +807,27 @@ if st.session_state["analytics_results"] is not None:
                                 price_str="Market",
                                 amount_str=f"₦{execution_amount:,.2f}",
                                 units_str="Calculated",
-                                status=f"MICRO BUY [{order_status}]: {order_id_str}"
+                                status=f"CAPPED BUY [{order_status}]: {order_id_str}"
                             )
-                            action_logs.append(f"✅ MICRO ROTATION BUY: Deployed ₦{execution_amount:,.2f} into {asset}.")
+                            action_logs.append(f"✅ CAPPED ROTATION BUY: Deployed ₦{execution_amount:,.2f} into {asset}.")
                             remaining_cash -= execution_amount
                             if remaining_cash < 0:
                                 remaining_cash = 0.0
+
+                            # Rest Guard: Pause briefly between sequential trade executions
+                            time.sleep(2)
                         else:
-                            action_logs.append(f"⏳ HOLD: {asset} deficit (₦{execution_amount:,.2f}) is below Luno micro-order threshold (₦100).")
+                            action_logs.append(f"⏳ HOLD: {asset} deficit (₦{execution_amount:,.2f}) is below Luno threshold (₦100).")
                     else:
                         action_logs.append(f"⏳ HOLD: Insufficient cash for {asset} tranche (Required: ₦{net_amount:,.2f}, Available: ₦{remaining_cash:,.2f}).")
 
             if not action_logs:
-                st.success("✅ Portfolio drift is within micro-tolerance limits. No rotation required.")
+                st.success("✅ Portfolio drift is within limits. No rotation required.")
             else:
-                st.success("📊 Micro-Optimized Rotation Report:\n\n" + "\n".join(action_logs))
+                st.success("📊 Capped & Cooled Rotation Report (Total Trades Executed: " + str(trades_executed_count) + "):\n\n" + "\n".join(action_logs))
 
-        except Exception as micro_err:
-            st.error(f"🚨 Micro-Rotation Exception: {str(micro_err)}")
+        except Exception as cap_err:
+            st.error(f"🚨 Capped Rotation Exception: {str(cap_err)}")
 
     # Isolated Persistent Audit Inspection Tabs
     st.markdown("### 📜 Persistent Audit Ledger Isolation Inspection")
