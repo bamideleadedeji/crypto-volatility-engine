@@ -170,7 +170,7 @@ def execute_luno_autonomous_rotation():
                     status_str = f"FAILED: {err_msg}"
                     action_summary.append(f"❌ CRON SELL {asset} FAILED: {err_msg}")
 
-                log_audit_entry("Luno Cron Bot", asset, spot_price, excess_val, vol_format, status_str)
+                log_audit_entry("Luno Cron Bot", asset, f"₦{spot_price:,.2f}", f"₦{excess_val:,.2f}", vol_format, status_str)
                 available_cash += excess_val
                 time.sleep(2)  # Rest Guard pause between orders
 
@@ -216,7 +216,7 @@ def execute_luno_autonomous_rotation():
                         status_str = f"FAILED: {err_msg}"
                         action_summary.append(f"❌ CRON BUY {asset} FAILED: {err_msg}")
 
-                    log_audit_entry("Luno Cron Bot", asset, prices[asset], net_amount, 0.0, status_str)
+                    log_audit_entry("Luno Cron Bot", asset, f"₦{prices[asset]:,.2f}", f"₦{net_amount:,.2f}", "Calculated", status_str)
                     remaining_cash -= net_amount
                     time.sleep(2)  # Rest Guard pause between orders
                 else:
@@ -234,11 +234,12 @@ def execute_luno_autonomous_rotation():
             send_telegram_alert(summary_text)
         else:
             print("✅ Portfolio is within precise 50/30/20 balance. No cron trades required.")
+            log_audit_entry("Luno Cron Bot", "PORTFOLIO", "N/A", "N/A", "N/A", "HOLD_BALANCED")
 
     except Exception as cron_ex:
         exc_msg = f"🚨 *Luno Cron Bot Exception*\nDetails: `{str(cron_ex)}`"
         print(exc_msg)
-        log_audit_entry("Luno Cron Bot", "SYSTEM", 0.0, 0.0, 0.0, f"EXCEPTION: {str(cron_ex)}")
+        log_audit_entry("Luno Cron Bot", "SYSTEM", "N/A", "N/A", "N/A", f"EXCEPTION: {str(cron_ex)}")
         send_telegram_alert(exc_msg)
 
 if __name__ == "__main__":
