@@ -658,7 +658,7 @@ if st.session_state["analytics_results"] is not None:
     # -------------------------------------------------------------
     st.divider()
     st.subheader("⚡ Section 4: 3-Trade Capped & Rest-Guarded Autonomous Rotation Engine")
-    st.caption("Restricts execution to max 3 trade categories simultaneously with a 2-minute cooling guard and precise Luno volume formatting.")
+    st.caption("Restricts execution to max 3 trade categories simultaneously with a 2-minute cooling guard and precise asset precision formatting.")
 
     TARGET_WEIGHTS = {
         "XBTNGN": 0.50,
@@ -694,11 +694,10 @@ if st.session_state["analytics_results"] is not None:
             luno_secret = st.secrets.get("LUNO_API_KEY_SECRET") or os.environ.get("LUNO_API_KEY_SECRET")
             MIN_LUNO_ORDER_NGN = 100.0
             
-            # Capping active trades to max 3 per cycle
             max_trades_allowed = 3
             trades_executed_count = 0
 
-            # Step 1: Check for Overweight Assets to Trim (Sell Overweight)
+            # Step 1: Check for Overweight Assets to Trim (Sell Overweight) with Asset-Specific Precision
             for asset, target_pct in TARGET_WEIGHTS.items():
                 if trades_executed_count >= max_trades_allowed:
                     action_logs.append("⚠️ Reached maximum 3-trade cycle cap. Pausing further actions for this run.")
@@ -711,8 +710,18 @@ if st.session_state["analytics_results"] is not None:
                 if delta < -MIN_LUNO_ORDER_NGN:
                     excess_val = abs(delta)
                     spot_price = asset_prices[asset]
-                    # Properly format base volume to 6 decimal places to prevent ErrInvalidBaseVolume
-                    sell_units = round(excess_val / spot_price, 6)
+                    
+                    # Apply strict asset precision rounding to prevent ErrInvalidBaseVolume
+                    if "ETH" in asset:
+                        sell_units = round(excess_val / spot_price, 4)
+                        vol_format = f"{sell_units:.4f}"
+                    elif "XBT" in asset or "BTC" in asset:
+                        sell_units = round(excess_val / spot_price, 8)
+                        vol_format = f"{sell_units:.8f}"
+                    else:
+                        sell_units = round(excess_val / spot_price, 4)
+                        vol_format = f"{sell_units:.4f}"
+
                     order_status = "SUCCESS"
                     order_id_str = "CAPPED_ROTATE_SELL"
 
@@ -722,7 +731,7 @@ if st.session_state["analytics_results"] is not None:
                             payload = {
                                 "pair": asset,
                                 "type": "SELL",
-                                "volume": f"{sell_units:.6f}",
+                                "volume": vol_format,
                             }
                             res = requests.post(
                                 "https://api.luno.com/api/1/marketorder",
@@ -746,13 +755,13 @@ if st.session_state["analytics_results"] is not None:
                         asset=asset,
                         price_str=f"₦{spot_price:,.2f}",
                         amount_str=f"₦{excess_val:,.2f}",
-                        units_str=f"{sell_units:.6f}",
+                        units_str=vol_format,
                         status=f"CAPPED SELL [{order_status}]: {order_id_str}"
                     )
-                    action_logs.append(f"🔄 CAPPED ROTATION SELL: Trimmed {asset} by ₦{excess_val:,.2f} ({sell_units:.6f} units).")
+                    action_logs.append(f"🔄 CAPPED ROTATION SELL: Trimmed {asset} by ₦{excess_val:,.2f} ({vol_format} units).")
                     available_cash += excess_val
 
-                    # Rest Guard: Pause briefly between sequential trade executions
+                    # Rest Guard between sequential orders
                     time.sleep(2)
 
             # Step 2: Execute Underweight Buys respecting trade cap
@@ -814,7 +823,7 @@ if st.session_state["analytics_results"] is not None:
                             if remaining_cash < 0:
                                 remaining_cash = 0.0
 
-                            # Rest Guard: Pause briefly between sequential trade executions
+                            # Rest Guard between sequential orders
                             time.sleep(2)
                         else:
                             action_logs.append(f"⏳ HOLD: {asset} deficit (₦{execution_amount:,.2f}) is below Luno threshold (₦100).")
