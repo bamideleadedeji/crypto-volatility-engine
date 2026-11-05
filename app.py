@@ -701,7 +701,7 @@ if st.session_state["analytics_results"] is not None:
             max_trades_allowed = 3
             trades_executed_count = 0
 
-            # Step 1: Check for Overweight Assets to Trim (Sell Overweight) with Asset-Specific Precision
+            # Step 1: Check for Overweight Assets to Trim (Sell Overweight) with Correct Endpoint & Precision
             for asset, target_pct in TARGET_WEIGHTS.items():
                 if trades_executed_count >= max_trades_allowed:
                     action_logs.append("⚠️ Reached maximum 3-trade cycle cap. Pausing further actions for this run.")
@@ -715,7 +715,6 @@ if st.session_state["analytics_results"] is not None:
                     excess_val = abs(delta)
                     spot_price = asset_prices[asset]
                     
-                    # Apply strict asset precision rounding to prevent ErrInvalidBaseVolume
                     if "ETH" in asset:
                         sell_units = round(excess_val / spot_price, 4)
                         vol_format = f"{sell_units:.4f}"
@@ -737,8 +736,9 @@ if st.session_state["analytics_results"] is not None:
                                 "type": "SELL",
                                 "volume": vol_format,
                             }
+                            # CORRECTED: Using /marketorder instead of /postmarketorder
                             res = requests.post(
-                                "https://api.luno.com/api/1/postmarketorder",
+                                "https://api.luno.com/api/1/marketorder",
                                 auth=auth,
                                 params=payload,
                                 timeout=10,
@@ -765,7 +765,6 @@ if st.session_state["analytics_results"] is not None:
                     action_logs.append(f"🔄 CAPPED ROTATION SELL: Trimmed {asset} by ₦{excess_val:,.2f} ({vol_format} units).")
                     available_cash += excess_val
 
-                    # Rest Guard between sequential orders
                     time.sleep(2)
 
             # Step 2: Execute Underweight Buys respecting trade cap
@@ -797,8 +796,9 @@ if st.session_state["analytics_results"] is not None:
                                         "type": "BUY",
                                         "counter_volume": f"{execution_amount:.2f}",
                                     }
+                                    # CORRECTED: Using /marketorder instead of /postmarketorder
                                     res = requests.post(
-                                        "https://api.luno.com/api/1/postmarketorder",
+                                        "https://api.luno.com/api/1/marketorder",
                                         auth=auth,
                                         params=payload,
                                         timeout=10,
@@ -827,7 +827,6 @@ if st.session_state["analytics_results"] is not None:
                             if remaining_cash < 0:
                                 remaining_cash = 0.0
 
-                            # Rest Guard between sequential orders
                             time.sleep(2)
                         else:
                             action_logs.append(f"⏳ HOLD: {asset} deficit (₦{execution_amount:,.2f}) is below Luno threshold (₦100).")
