@@ -1,9 +1,10 @@
-import os
 import csv
+import datetime
+import os
 import time
+from datetime import datetime
 import requests
 from requests.auth import HTTPBasicAuth
-from datetime import datetime
 
 # ----------------------------------------------------------------------
 # 1. Credentials & Configuration
@@ -16,11 +17,11 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 TARGET_WEIGHTS = {
     "XBTNGN": 0.50,
     "ETHNGN": 0.30,
-    "SOLNGN": 0.20
+    "SOLNGN": 0.20,
 }
 
-MIN_LUNO_ORDER_NGN = 100.0   # Luno micro-order threshold floor
-MAX_TRADES_PER_RUN = 3       # Restrict to max 3 trade operations per cycle
+MIN_LUNO_ORDER_NGN = 100.0  # Luno micro-order threshold floor
+MAX_TRADES_PER_RUN = 3      # Restrict to max 3 trade operations per cycle
 AUDIT_LOG_FILE = "luno_live_pilot_audit.csv"
 
 # ----------------------------------------------------------------------
@@ -46,12 +47,12 @@ def log_audit_entry(venue, asset, price_str, amount_str, units_str, status):
     """Guarantees immediate CSV audit logging for every execution attempt (Success, Fail, or Hold)."""
     try:
         file_exists = os.path.isfile(AUDIT_LOG_FILE)
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        with open(AUDIT_LOG_FILE, mode='a', newline='', encoding='utf-8') as f:
+        with open(AUDIT_LOG_FILE, mode="a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             if not file_exists:
-                writer.writerow(['Timestamp', 'Venue', 'Asset', 'Price', 'Amount', 'Units', 'Status'])
+                writer.writerow(["Timestamp", "Venue", "Asset", "Price", "Amount", "Units", "Status"])
             writer.writerow([timestamp, venue, asset, price_str, amount_str, units_str, status])
         print(f"📝 Audit log updated for {asset}: {status}")
     except Exception as log_err:
@@ -61,7 +62,7 @@ def log_audit_entry(venue, asset, price_str, amount_str, units_str, status):
 # 4. Headless Luno Autonomous Rotation Bot Engine
 # ----------------------------------------------------------------------
 def execute_luno_autonomous_rotation():
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{now_str}] Executing Luno Multi-Asset Autonomous Rotation Bot...")
 
     if not LUNO_KEY or not LUNO_SECRET:
@@ -73,7 +74,7 @@ def execute_luno_autonomous_rotation():
     auth = HTTPBasicAuth(LUNO_KEY, LUNO_SECRET)
 
     try:
-        # A. Fetch Spot Tickers
+        # A. Fetch Spot Tickers with graceful fallbacks
         btc_res = requests.get("https://api.luno.com/api/1/ticker?pair=XBTNGN", auth=auth, timeout=10)
         eth_res = requests.get("https://api.luno.com/api/1/ticker?pair=ETHNGN", auth=auth, timeout=10)
         sol_res = requests.get("https://api.luno.com/api/1/ticker?pair=SOLNGN", auth=auth, timeout=10)
@@ -105,7 +106,7 @@ def execute_luno_autonomous_rotation():
         holdings_val = {
             "XBTNGN": btc_balance * prices["XBTNGN"],
             "ETHNGN": eth_balance * prices["ETHNGN"],
-            "SOLNGN": sol_balance * prices["SOLNGN"]
+            "SOLNGN": sol_balance * prices["SOLNGN"],
         }
 
         total_crypto_val = sum(holdings_val.values())
@@ -145,14 +146,14 @@ def execute_luno_autonomous_rotation():
                 order_payload = {
                     "pair": asset,
                     "type": "SELL",
-                    "volume": vol_format
+                    "volume": vol_format,
                 }
 
                 order_res = requests.post(
                     "https://api.luno.com/api/1/postmarketorder",
                     auth=auth,
                     params=order_payload,
-                    timeout=15
+                    timeout=15,
                 )
 
                 try:
@@ -185,20 +186,20 @@ def execute_luno_autonomous_rotation():
             delta = target_val - current_val  # Positive means underweight
 
             if delta > MIN_LUNO_ORDER_NGN:
-                net_amount = min(delta * 0.995, remaining_cash) # Account for fee buffer
+                net_amount = min(delta * 0.995, remaining_cash)  # Account for fee buffer
 
                 if net_amount >= MIN_LUNO_ORDER_NGN:
                     order_payload = {
                         "pair": asset,
                         "type": "BUY",
-                        "counter_volume": f"{net_amount:.2f}"
+                        "counter_volume": f"{net_amount:.2f}",
                     }
 
                     order_res = requests.post(
                         "https://api.luno.com/api/1/postmarketorder",
                         auth=auth,
                         params=order_payload,
-                        timeout=15
+                        timeout=15,
                     )
 
                     try:
