@@ -440,19 +440,19 @@ if st.session_state["analytics_results"] is not None:
     st.divider()
 
     # -------------------------------------------------------------
-    # Section 4: 3-Trade Capped Autonomous Rotation Engine (FIXED COUNTER & SPOT UPGRADED)
+    # Section 4: Autonomous Internal Rebalancing Engine (Zero-Addition / 50-30-20)
     # -------------------------------------------------------------
-    st.subheader("⚡ Section 4: 3-Trade Capped Autonomous Rotation Engine (Spot Upgraded & Robust Counter)")
-    st.caption("Routes orders through Luno spot trading wallets using `/marketorder`, applying base/quote fee logic and ensuring the trade execution counter increments accurately.")
+    st.subheader("⚡ Section 4: Autonomous Internal Rebalancing Engine (Zero-Addition / 50-30-20)")
+    st.caption("Rebalances existing portfolio holdings to strict 50% BTC, 30% ETH, 20% SOL weights by selling overweights internally to fund underweights.")
 
     TARGET_WEIGHTS = {"XBTNGN": 0.50, "ETHNGN": 0.30, "SOLNGN": 0.20}
 
     col_w1, col_w2, col_w3 = st.columns(3)
-    col_w1.metric("XBTNGN Target Weight", "50%")
-    col_w2.metric("ETHNGN Target Weight", "30%")
-    col_w3.metric("SOLNGN Target Weight", "20%")
+    col_w1.metric("XBTNGN Target", "50%")
+    col_w2.metric("ETHNGN Target", "30%")
+    col_w3.metric("SOLNGN Target", "20%")
 
-    if st.button("🔄 Execute Capped Spot Rotation", key="btn_execute_capped_rotation", use_container_width=True):
+    if st.button("🔄 Execute Internal Rebalance", key="btn_execute_internal_rebalance", use_container_width=True):
         try:
             active_venue = st.session_state.get("venue_toggle", "Luno Live (Spot Wallets)")
             total_portfolio_val = float(luno_data["portfolio_ngn"])
@@ -478,15 +478,14 @@ if st.session_state["analytics_results"] is not None:
             max_trades_allowed = 3
             trades_executed_count = 0
 
-            # Step 1: Trim Overweight Assets (Sell - Quote asset fee rule)
+            # Step 1: Execute Sells on Overweight Assets to Generate Internal Cash
             for asset, target_pct in TARGET_WEIGHTS.items():
                 if trades_executed_count >= max_trades_allowed:
-                    action_logs.append("⚠️ Reached maximum 3-trade cycle cap.")
                     break
 
                 target_val = total_portfolio_val * target_pct
                 current_val = current_holdings_val.get(asset, 0.0)
-                delta = target_val - current_val
+                delta = target_val - current_val  # Negative means overweight (needs selling)
 
                 if delta < -MIN_LUNO_ORDER_NGN:
                     excess_val = abs(delta)
@@ -494,7 +493,7 @@ if st.session_state["analytics_results"] is not None:
                     vol_format = f"{round(excess_val / spot_price, 8):.8f}" if "XBT" in asset else f"{round(excess_val / spot_price, 4):.4f}"
 
                     order_status = "SUCCESS"
-                    order_id_str = "SPOT_ROTATE_SELL"
+                    order_id_str = "INTERNAL_SELL"
 
                     if "Luno" in active_venue and luno_key and luno_secret:
                         try:
@@ -505,6 +504,7 @@ if st.session_state["analytics_results"] is not None:
                                 r_data = res.json()
                                 order_id_str = r_data.get("order_id", "SOLD_SPOT")
                                 trades_executed_count += 1
+                                available_cash += excess_val
                             else:
                                 order_status = f"HTTP_{res.status_code}"
                                 order_id_str = res.text[:100] if res.text else "Error"
@@ -513,63 +513,60 @@ if st.session_state["analytics_results"] is not None:
                             order_id_str = str(api_ex)
                     else:
                         trades_executed_count += 1
+                        available_cash += excess_val
 
-                    append_isolated_audit_log(active_venue, asset, f"₦{spot_price:,.2f}", f"₦{excess_val:,.2f}", vol_format, f"SPOT SELL [{order_status}]: {order_id_str}")
-                    action_logs.append(f"🔄 SPOT ROTATION SELL: Trimmed {asset} by ₦{excess_val:,.2f} ({vol_format} units). Status: {order_status}")
-                    available_cash += excess_val
+                    append_isolated_audit_log(active_venue, asset, f"₦{spot_price:,.2f}", f"₦{excess_val:,.2f}", vol_format, f"REBALANCE SELL [{order_status}]: {order_id_str}")
+                    action_logs.append(f"🔄 REBALANCE SELL: Trimmed overweight {asset} by ₦{excess_val:,.2f}. Status: {order_status}")
                     time.sleep(1)
 
-            # Step 2: Buy Underweight Assets (Buy - Base asset fee rule)
-            remaining_cash = available_cash
+            # Step 2: Execute Buys on Underweight Assets Using Internal Cash
             for asset, target_pct in TARGET_WEIGHTS.items():
                 if trades_executed_count >= max_trades_allowed:
-                    action_logs.append("⚠️ Reached maximum 3-trade cycle cap.")
                     break
 
                 target_val = total_portfolio_val * target_pct
                 current_val = current_holdings_val.get(asset, 0.0)
-                delta = target_val - current_val
+                delta = target_val - current_val  # Positive means underweight (needs buying)
 
-                if delta > MIN_LUNO_ORDER_NGN:
-                    net_amount = risk_guard.calculate_net_allocation_with_fees(delta)
-                    execution_amount = min(net_amount, remaining_cash)
+                if delta > MIN_LUNO_ORDER_NGN and available_cash >= MIN_LUNO_ORDER_NGN:
+                    execution_amount = min(delta, available_cash)
 
-                    if execution_amount >= MIN_LUNO_ORDER_NGN:
-                        order_status = "SUCCESS"
-                        order_id_str = "SPOT_ROTATE_BUY"
+                    order_status = "SUCCESS"
+                    order_id_str = "INTERNAL_BUY"
 
-                        if "Luno" in active_venue and luno_key and luno_secret:
-                            try:
-                                auth = HTTPBasicAuth(luno_key, luno_secret)
-                                payload = {"pair": asset, "type": "BUY", "counter_volume": f"{execution_amount:.2f}"}
-                                res = requests.post("https://api.luno.com/api/1/marketorder", auth=auth, params=payload, timeout=10)
-                                if res.status_code == 200 and res.text and res.text.strip():
-                                    r_data = res.json()
-                                    order_id_str = r_data.get("order_id", "FILLED_SPOT")
-                                    trades_executed_count += 1
-                                else:
-                                    order_status = f"HTTP_{res.status_code}"
-                                    order_id_str = res.text[:100] if res.text else "Error"
-                            except Exception as api_ex:
-                                order_status = "API_ERROR"
-                                order_id_str = str(api_ex)
-                        else:
-                            trades_executed_count += 1
+                    if "Luno" in active_venue and luno_key and luno_secret:
+                        try:
+                            auth = HTTPBasicAuth(luno_key, luno_secret)
+                            payload = {"pair": asset, "type": "BUY", "counter_volume": f"{execution_amount:.2f}"}
+                            res = requests.post("https://api.luno.com/api/1/marketorder", auth=auth, params=payload, timeout=10)
+                            if res.status_code == 200 and res.text and res.text.strip():
+                                r_data = res.json()
+                                order_id_str = r_data.get("order_id", "FILLED_SPOT")
+                                trades_executed_count += 1
+                                available_cash -= execution_amount
+                            else:
+                                order_status = f"HTTP_{res.status_code}"
+                                order_id_str = res.text[:100] if res.text else "Error"
+                        except Exception as api_ex:
+                            order_status = "API_ERROR"
+                            order_id_str = str(api_ex)
+                    else:
+                        trades_executed_count += 1
+                        available_cash -= execution_amount
 
-                        append_isolated_audit_log(active_venue, asset, "Market", f"₦{execution_amount:,.2f}", "Calculated", f"SPOT BUY [{order_status}]: {order_id_str}")
-                        action_logs.append(f"✅ SPOT ROTATION BUY: Deployed ₦{execution_amount:,.2f} into {asset}. Status: {order_status}")
-                        remaining_cash -= execution_amount
-                        time.sleep(1)
+                    append_isolated_audit_log(active_venue, asset, "Market", f"₦{execution_amount:,.2f}", "Calculated", f"REBALANCE BUY [{order_status}]: {order_id_str}")
+                    action_logs.append(f"✅ REBALANCE BUY: Deployed ₦{execution_amount:,.2f} into underweight {asset}. Status: {order_status}")
+                    time.sleep(1)
 
             if not action_logs:
-                st.success("✅ Portfolio drift is within limits. No rotation required.")
-                append_isolated_audit_log(active_venue, "PORTFOLIO", "N/A", "N/A", "N/A", "HOLD_BALANCED")
+                st.success("✅ Portfolio allocation is precisely balanced at 50/30/20. No rotation needed.")
+                append_isolated_audit_log(active_venue, "PORTFOLIO", "N/A", "N/A", "N/A", "BALANCED_50_30_20")
             else:
-                st.success(f"📊 Spot Rotation Report — Total Executed Trades: {trades_executed_count}\n\n" + "\n".join(action_logs))
+                st.success(f"📊 Internal Rebalance Complete — Total Executed Trades: {trades_executed_count}\n\n" + "\n".join(action_logs))
 
-        except Exception as cap_err:
-            st.error(f"🚨 Capped Rotation Exception: {str(cap_err)}")
-            append_isolated_audit_log("Luno Live", "SYSTEM", "N/A", "N/A", "N/A", f"EXCEPTION: {str(cap_err)}")
+        except Exception as rebal_err:
+            st.error(f"🚨 Rebalance Exception: {str(rebal_err)}")
+            append_isolated_audit_log("Luno Live", "SYSTEM", "N/A", "N/A", "N/A", f"EXCEPTION: {str(rebal_err)}")
 
     st.markdown("### 📜 Persistent Audit Ledger Inspection")
     verified_logs = load_and_verify_audit_csvs()
