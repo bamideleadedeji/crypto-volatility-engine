@@ -1,8 +1,7 @@
 import csv
-import datetime
+from datetime import datetime
 import os
 import time
-from datetime import datetime
 import requests
 from requests.auth import HTTPBasicAuth
 
@@ -20,7 +19,7 @@ TARGET_WEIGHTS = {
     "SOLNGN": 0.20,
 }
 
-MIN_LUNO_ORDER_NGN = 100.0  # Luno micro-order threshold floor
+MIN_LUNO_ORDER_NGN = 50.0   # Luno exact exchange minimum order threshold (₦50)
 MAX_TRADES_PER_RUN = 3      # Restrict to max 3 trade operations per cycle
 AUDIT_LOG_FILE = "luno_live_pilot_audit.csv"
 
@@ -149,10 +148,11 @@ def execute_luno_autonomous_rotation():
                     "volume": vol_format,
                 }
 
+                # Correct endpoint (/marketorder) and form-encoded data body
                 order_res = requests.post(
-                    "https://api.luno.com/api/1/postmarketorder",
+                    "https://api.luno.com/api/1/marketorder",
                     auth=auth,
-                    params=order_payload,
+                    data=order_payload,
                     timeout=15,
                 )
 
@@ -195,10 +195,11 @@ def execute_luno_autonomous_rotation():
                         "counter_volume": f"{net_amount:.2f}",
                     }
 
+                    # Correct endpoint (/marketorder) and form-encoded data body
                     order_res = requests.post(
-                        "https://api.luno.com/api/1/postmarketorder",
+                        "https://api.luno.com/api/1/marketorder",
                         auth=auth,
-                        params=order_payload,
+                        data=order_payload,
                         timeout=15,
                     )
 
