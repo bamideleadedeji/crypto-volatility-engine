@@ -80,77 +80,71 @@ except Exception:
 
 
 # ----------------------------------------------------------------------
-# Luno Spot Wallet-Aware Live Market Fetcher (Zero Hardcoding)
+# Luno Spot Wallet-Aware Live Market Fetcher (Zero Hardcoded Fallbacks)
 # ----------------------------------------------------------------------
 def get_luno_portfolio_value() -> dict:
-    """Fetches real-time live balances from Luno Spot Trading Wallets and live exchange tickers."""
-    try:
-        btc_res = requests.get("https://api.luno.com/api/1/ticker?pair=XBTNGN", timeout=5)
-        eth_res = requests.get("https://api.luno.com/api/1/ticker?pair=ETHNGN", timeout=5)
-        sol_res = requests.get("https://api.luno.com/api/1/ticker?pair=SOLNGN", timeout=5)
+    """Fetches real-time live balances and spot tickers directly from Luno API with zero hardcoded defaults."""
+    luno_key = st.secrets.get("LUNO_API_KEY_ID") or os.environ.get("LUNO_API_KEY_ID")
+    luno_secret = st.secrets.get("LUNO_API_KEY_SECRET") or os.environ.get("LUNO_API_KEY_SECRET")
 
-        btc_price_ngn = float(btc_res.json().get("last_trade", 0.0)) if btc_res.status_code == 200 else 0.0
-        eth_price_ngn = float(eth_res.json().get("last_trade", 0.0)) if eth_res.status_code == 200 else 0.0
-        sol_price_ngn = float(sol_res.json().get("last_trade", 0.0)) if sol_res.status_code == 200 else 0.0
+    if not luno_key or not luno_secret:
+        raise Exception("Luno API Credentials (LUNO_API_KEY_ID & LUNO_API_KEY_SECRET) are missing from environment/secrets.")
 
-        luno_key = st.secrets.get("LUNO_API_KEY_ID") or os.environ.get("LUNO_API_KEY_ID")
-        luno_secret = st.secrets.get("LUNO_API_KEY_SECRET") or os.environ.get("LUNO_API_KEY_SECRET")
+    auth = HTTPBasicAuth(luno_key, luno_secret)
 
-        ngn_bal = 0.0
-        btc_bal = 0.0
-        eth_bal = 0.0
-        sol_bal = 0.0
+    # 1. Fetch live market tickers from Luno
+    btc_res = requests.get("https://api.luno.com/api/1/ticker?pair=XBTNGN", timeout=8)
+    eth_res = requests.get("https://api.luno.com/api/1/ticker?pair=ETHNGN", timeout=8)
+    sol_res = requests.get("https://api.luno.com/api/1/ticker?pair=SOLNGN", timeout=8)
 
-        if luno_key and luno_secret:
-            auth = HTTPBasicAuth(luno_key, luno_secret)
-            bal_res = requests.get("https://api.luno.com/api/1/balance", auth=auth, timeout=8)
-            if bal_res.status_code == 200:
-                b_data = bal_res.json().get("balance", [])
-                for b in b_data:
-                    asset_name = b.get("asset")
-                    bal_val = float(b.get("balance", 0.0))
-                    if asset_name == "NGN":
-                        ngn_bal += bal_val
-                    elif asset_name in ["XBT", "BTC"]:
-                        btc_bal += bal_val
-                    elif asset_name == "ETH":
-                        eth_bal += bal_val
-                    elif asset_name == "SOL":
-                        sol_bal += bal_val
-            else:
-                raise Exception(f"Luno Balance API Error: HTTP {bal_res.status_code} - {bal_res.text}")
-        else:
-            raise Exception("Luno API Credentials not found in Streamlit Secrets.")
+    if btc_res.status_code != 200 or eth_res.status_code != 200 or sol_res.status_code != 200:
+        raise Exception(f"Failed to fetch live Luno tickers: XBT({btc_res.status_code}), ETH({eth_res.status_code}), SOL({sol_res.status_code})")
 
-        total_crypto_value = (btc_bal * btc_price_ngn) + (eth_bal * eth_price_ngn) + (sol_bal * sol_price_ngn)
-        total_ngn_value = ngn_bal + total_crypto_value
+    btc_price_ngn = float(btc_res.json().get("last_trade", 0.0))
+    eth_price_ngn = float(eth_res.json().get("last_trade", 0.0))
+    sol_price_ngn = float(sol_res.json().get("last_trade", 0.0))
 
-        return {
-            "btc_price_ngn": btc_price_ngn,
-            "eth_price_ngn": eth_price_ngn,
-            "sol_price_ngn": sol_price_ngn,
-            "portfolio_ngn": total_ngn_value,
-            "crypto_ngn": total_crypto_value,
-            "ngn_balance": ngn_bal,
-            "btc_balance": btc_bal,
-            "eth_balance": eth_bal,
-            "sol_balance": sol_bal,
-            "status": "LIVE LUNO SPOT CONNECTED",
-        }
-    except Exception as e:
-        st.error(f"🚨 Live Portfolio Fetch Exception: {str(e)}")
-        return {
-            "btc_price_ngn": 0.0,
-            "eth_price_ngn": 0.0,
-            "sol_price_ngn": 0.0,
-            "portfolio_ngn": 0.0,
-            "crypto_ngn": 0.0,
-            "ngn_balance": 0.0,
-            "btc_balance": 0.0,
-            "eth_balance": 0.0,
-            "sol_balance": 0.0,
-            "status": f"ERROR: {str(e)}",
-        }
+    if btc_price_ngn <= 0 or eth_price_ngn <= 0 or sol_price_ngn <= 0:
+        raise Exception("Received invalid zero or negative trade prices from Luno tickers.")
+
+    # 2. Fetch live wallet balances from Luno
+    bal_res = requests.get("https://api.luno.com/api/1/balance", auth=auth, timeout=10)
+    if bal_res.status_code != 200:
+        raise Exception(f"Luno Balance API Error: HTTP {bal_res.status_code} - {bal_res.text}")
+
+    b_data = bal_res.json().get("balance", [])
+    ngn_bal = 0.0
+    btc_bal = 0.0
+    eth_bal = 0.0
+    sol_bal = 0.0
+
+    for b in b_data:
+        asset_name = b.get("asset")
+        bal_val = float(b.get("balance", 0.0))
+        if asset_name == "NGN":
+            ngn_bal += bal_val
+        elif asset_name in ["XBT", "BTC"]:
+            btc_bal += bal_val
+        elif asset_name == "ETH":
+            eth_bal += bal_val
+        elif asset_name == "SOL":
+            sol_bal += bal_val
+
+    total_crypto_value = (btc_bal * btc_price_ngn) + (eth_bal * eth_price_ngn) + (sol_bal * sol_price_ngn)
+    total_ngn_value = ngn_bal + total_crypto_value
+
+    return {
+        "btc_price_ngn": btc_price_ngn,
+        "eth_price_ngn": eth_price_ngn,
+        "sol_price_ngn": sol_price_ngn,
+        "portfolio_ngn": total_ngn_value,
+        "crypto_ngn": total_crypto_value,
+        "ngn_balance": ngn_bal,
+        "btc_balance": btc_bal,
+        "eth_balance": eth_bal,
+        "sol_balance": sol_bal,
+        "status": "LIVE LUNO SPOT CONNECTED",
+    }
 
 
 def append_isolated_audit_log(venue, asset, price_str, amount_str, units_str, status):
@@ -195,38 +189,40 @@ st.set_page_config(
 )
 
 st.title("🔴 Luno Live Real-Capital Rebalancing & Volatility Suite")
-st.caption("Dedicated Luno Spot Trading Wallet Execution Engine — Strict 50% BTC / 30% ETH / 20% SOL Target Allocation")
+st.caption("Dedicated Luno Spot Trading Wallet Execution Engine — Strict 50% XBTNGN / 30% ETHNGN / 20% SOLNGN Target Allocation")
 st.divider()
 
-luno_data = get_luno_portfolio_value()
+# Live Portfolio Data Fetch (Strict Live Execution - Halts if API fails)
+try:
+    luno_data = get_luno_portfolio_value()
+    api_connected = True
+except Exception as e:
+    st.error(f"🚨 Live Luno Connection Error: {str(e)}")
+    st.stop()
 
 l_col1, l_col2, l_col3, l_col4 = st.columns(4)
 l_col1.metric("Total Luno Portfolio Value", f"₦{luno_data['portfolio_ngn']:,.2f}")
 l_col2.metric("Liquid NGN Cash Balance", f"₦{luno_data['ngn_balance']:,.2f}")
-l_col3.metric("BTC Holdings", f"{luno_data['btc_balance']:.8f} BTC")
-l_col4.metric("ETH / SOL Holdings", f"{luno_data['eth_balance']:.4f} ETH | {luno_data['sol_balance']:.4f} SOL")
+l_col3.metric("XBTNGN Holdings", f"{luno_data['btc_balance']:.8f} XBT")
+l_col4.metric("ETHNGN / SOLNGN Holdings", f"{luno_data['eth_balance']:.4f} ETH | {luno_data['sol_balance']:.4f} SOL")
 
 st.divider()
 
-# Sidebar Controls
+# Sidebar Controls (Driven entirely by live fetched capital)
 st.sidebar.header("🕹️ Institutional Controls")
-symbol = st.sidebar.selectbox("Asset Identifier", ["BTC-USD", "ETH-USD", "SOL-USD"], index=0, key="selected_asset")
-capital = st.sidebar.number_input("Portfolio Capital (NGN)", value=float(luno_data["portfolio_ngn"]) if luno_data["portfolio_ngn"] > 0 else 1000.0, step=500.0, format="%.2f")
+selected_pair = st.sidebar.selectbox("Luno Trading Pair Identifier", ["XBTNGN", "ETHNGN", "SOLNGN"], index=0, key="selected_pair")
+capital = st.sidebar.number_input("Portfolio Capital (NGN)", value=float(luno_data["portfolio_ngn"]), step=500.0, format="%.2f")
 epochs = st.sidebar.number_input("Neural Network Epochs", value=10, min_value=5, max_value=20, step=5)
 
-luno_key = st.secrets.get("LUNO_API_KEY_ID") or os.environ.get("LUNO_API_KEY_ID")
-luno_secret = st.secrets.get("LUNO_API_KEY_SECRET") or os.environ.get("LUNO_API_KEY_SECRET")
-
 st.sidebar.divider()
-if luno_key and luno_secret:
-    st.sidebar.success(f"🔴 Luno Spot API Connected (`{luno_key[:4]}...`)")
-else:
-    st.sidebar.warning("🔴 Luno Spot API: Credentials Missing in Secrets")
+st.sidebar.success("🔴 Luno Live Spot API Connected Successfully")
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def load_cached_market_data(ticker_symbol: str) -> pd.DataFrame:
-    data = fetch_crypto_data(symbol=ticker_symbol)
+    proxy_map = {"XBTNGN": "BTC-USD", "ETHNGN": "ETH-USD", "SOLNGN": "SOL-USD"}
+    fetch_symbol = proxy_map.get(ticker_symbol, "BTC-USD")
+    data = fetch_crypto_data(symbol=fetch_symbol)
     if data is not None and not data.empty:
         float_cols = data.select_dtypes(include=["float64"]).columns
         data[float_cols] = data[float_cols].astype("float32")
@@ -239,8 +235,8 @@ if "analytics_results" not in st.session_state:
 run_analytics = st.sidebar.button("🚀 Execute Quantitative Analytics", key="btn_run_analytics", use_container_width=True)
 
 if run_analytics or st.session_state["analytics_results"] is None:
-    with st.spinner("Retrieving market data & fitting volatility models..."):
-        df = load_cached_market_data(symbol)
+    with st.spinner(f"Retrieving market data for {selected_pair} & fitting volatility models..."):
+        df = load_cached_market_data(selected_pair)
 
         _, garch_vol = fit_garch_model(df["Log_Return"])
         garch_vol = pd.Series(garch_vol, index=df.index[-len(garch_vol):], dtype="float32") if isinstance(garch_vol, np.ndarray) else garch_vol.astype("float32")
@@ -272,7 +268,6 @@ if run_analytics or st.session_state["analytics_results"] is None:
         else:
             trans_vol = garch_vol
 
-        min_len = min(len(garch_vol), len(gjr_vol), len(egarch_vol), len(lstm_vol), len(trans_vol))
         latest_price_usd = float(df["Close"].iloc[-1])
         latest_garch_vol = float(garch_vol.iloc[-1])
         latest_gjr_vol = float(gjr_vol.iloc[-1]) if HAS_ASYMMETRIC_GARCH else latest_garch_vol
@@ -286,7 +281,7 @@ if run_analytics or st.session_state["analytics_results"] is None:
             "latest_garch_vol": latest_garch_vol,
             "latest_gjr_vol": latest_gjr_vol,
             "risk_summary": risk_summary,
-            "symbol": symbol,
+            "selected_pair": selected_pair,
             "capital": capital,
         }
 
@@ -298,10 +293,14 @@ if st.session_state["analytics_results"] is not None:
     latest_gjr_vol = res["latest_gjr_vol"]
     risk_summary = res["risk_summary"]
 
-    usd_ngn_fx = luno_data["btc_price_ngn"] / 82000.0 if luno_data["btc_price_ngn"] > 0 else 1500.0
-    display_spot = luno_data["btc_price_ngn"] if "BTC" in symbol and luno_data["btc_price_ngn"] > 0 else latest_price_usd * usd_ngn_fx
+    if selected_pair == "XBTNGN":
+        display_spot = luno_data["btc_price_ngn"]
+    elif selected_pair == "ETHNGN":
+        display_spot = luno_data["eth_price_ngn"]
+    else:
+        display_spot = luno_data["sol_price_ngn"]
 
-    st.subheader("📌 Executive Risk & Volatility Dashboard")
+    st.subheader(f"📌 Executive Risk & Volatility Dashboard ({selected_pair})")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Spot Price", f"₦{display_spot:,.2f}")
     m2.metric("GARCH(1,1) Vol", f"{latest_garch_vol*100:.2f}%")
@@ -313,8 +312,8 @@ if st.session_state["analytics_results"] is not None:
     # -------------------------------------------------------------
     # Section 4: Luno Live Autonomous Internal Rebalance Engine (50/30/20)
     # -------------------------------------------------------------
-    st.subheader("⚡ Section 4: Luno Live Autonomous Internal Rebalancing Engine (50% BTC / 30% ETH / 20% SOL)")
-    st.caption("Executes live spot market orders on Luno Spot Trading Wallets using form-encoded POST data (`data=payload`), strict base/quote volume formatting, and the ₦50 exchange minimum threshold.")
+    st.subheader("⚡ Section 4: Luno Live Autonomous Internal Rebalancing Engine (50% XBTNGN / 30% ETHNGN / 20% SOLNGN)")
+    st.caption("Executes live spot market orders on Luno Spot Trading Wallets using live capital fetched directly on execution click.")
 
     TARGET_WEIGHTS = {"XBTNGN": 0.50, "ETHNGN": 0.30, "SOLNGN": 0.20}
 
@@ -325,25 +324,31 @@ if st.session_state["analytics_results"] is not None:
 
     if st.button("🔄 Execute Live Luno Rebalance", key="btn_luno_rebalance", use_container_width=True):
         try:
-            total_portfolio_val = float(luno_data["portfolio_ngn"])
-            available_cash = float(luno_data["ngn_balance"])
+            # Re-fetch live capital instantly upon execution click to guarantee zero lag or stale equity
+            live_exec_data = get_luno_portfolio_value()
+            total_portfolio_val = float(live_exec_data["portfolio_ngn"])
+            available_cash = float(live_exec_data["ngn_balance"])
 
             asset_prices = {
-                "XBTNGN": luno_data["btc_price_ngn"],
-                "ETHNGN": luno_data["eth_price_ngn"],
-                "SOLNGN": luno_data["sol_price_ngn"]
+                "XBTNGN": live_exec_data["btc_price_ngn"],
+                "ETHNGN": live_exec_data["eth_price_ngn"],
+                "SOLNGN": live_exec_data["sol_price_ngn"]
             }
 
             current_holdings_val = {
-                "XBTNGN": luno_data["btc_balance"] * asset_prices["XBTNGN"],
-                "ETHNGN": luno_data["eth_balance"] * asset_prices["ETHNGN"],
-                "SOLNGN": luno_data["sol_balance"] * asset_prices["SOLNGN"]
+                "XBTNGN": live_exec_data["btc_balance"] * asset_prices["XBTNGN"],
+                "ETHNGN": live_exec_data["eth_balance"] * asset_prices["ETHNGN"],
+                "SOLNGN": live_exec_data["sol_balance"] * asset_prices["SOLNGN"]
             }
 
             action_logs = []
             MIN_LUNO_ORDER_NGN = 50.0  # Luno exact exchange minimum order threshold (₦50)
             max_trades_allowed = 3
             trades_executed_count = 0
+
+            luno_key = st.secrets.get("LUNO_API_KEY_ID") or os.environ.get("LUNO_API_KEY_ID")
+            luno_secret = st.secrets.get("LUNO_API_KEY_SECRET") or os.environ.get("LUNO_API_KEY_SECRET")
+            auth = HTTPBasicAuth(luno_key, luno_secret)
 
             # Step 1: Execute Sells on Overweight Assets (Base Asset Volume)
             for asset, target_pct in TARGET_WEIGHTS.items():
@@ -370,21 +375,16 @@ if st.session_state["analytics_results"] is not None:
                     order_status = "SUCCESS"
                     order_id_str = "MARKET_SELL"
 
-                    if luno_key and luno_secret:
-                        auth = HTTPBasicAuth(luno_key, luno_secret)
-                        payload = {"pair": asset, "type": "SELL", "volume": vol_format}
-                        res = requests.post("https://api.luno.com/api/1/marketorder", auth=auth, data=payload, timeout=10)
-                        if res.status_code == 200 and res.text and res.text.strip():
-                            r_data = res.json()
-                            order_id_str = r_data.get("order_id", "SOLD")
-                            trades_executed_count += 1
-                            available_cash += excess_val
-                        else:
-                            order_status = f"HTTP_{res.status_code}"
-                            order_id_str = res.text[:150] if res.text else "Error"
-                    else:
+                    payload = {"pair": asset, "type": "SELL", "volume": vol_format}
+                    res = requests.post("https://api.luno.com/api/1/marketorder", auth=auth, data=payload, timeout=10)
+                    if res.status_code == 200 and res.text and res.text.strip():
+                        r_data = res.json()
+                        order_id_str = r_data.get("order_id", "SOLD")
                         trades_executed_count += 1
                         available_cash += excess_val
+                    else:
+                        order_status = f"HTTP_{res.status_code}"
+                        order_id_str = res.text[:150] if res.text else "Error"
 
                     append_isolated_audit_log("Luno Spot Live", asset, f"₦{spot_price:,.2f}", f"₦{excess_val:,.2f}", vol_format, f"LIVE SELL [{order_status}]: {order_id_str}")
                     action_logs.append(f"🔄 LIVE SELL: Trimmed {asset} by ₦{excess_val:,.2f} ({vol_format} units). Status: {order_status} ({order_id_str})")
@@ -405,21 +405,16 @@ if st.session_state["analytics_results"] is not None:
                     order_status = "SUCCESS"
                     order_id_str = "MARKET_BUY"
 
-                    if luno_key and luno_secret:
-                        auth = HTTPBasicAuth(luno_key, luno_secret)
-                        payload = {"pair": asset, "type": "BUY", "counter_volume": f"{execution_amount:.2f}"}
-                        res = requests.post("https://api.luno.com/api/1/marketorder", auth=auth, data=payload, timeout=10)
-                        if res.status_code == 200 and res.text and res.text.strip():
-                            r_data = res.json()
-                            order_id_str = r_data.get("order_id", "BOUGHT")
-                            trades_executed_count += 1
-                            available_cash -= execution_amount
-                        else:
-                            order_status = f"HTTP_{res.status_code}"
-                            order_id_str = res.text[:150] if res.text else "Error"
-                    else:
+                    payload = {"pair": asset, "type": "BUY", "counter_volume": f"{execution_amount:.2f}"}
+                    res = requests.post("https://api.luno.com/api/1/marketorder", auth=auth, data=payload, timeout=10)
+                    if res.status_code == 200 and res.text and res.text.strip():
+                        r_data = res.json()
+                        order_id_str = r_data.get("order_id", "BOUGHT")
                         trades_executed_count += 1
                         available_cash -= execution_amount
+                    else:
+                        order_status = f"HTTP_{res.status_code}"
+                        order_id_str = res.text[:150] if res.text else "Error"
 
                     append_isolated_audit_log("Luno Spot Live", asset, "Market", f"₦{execution_amount:,.2f}", "CounterNGN", f"LIVE BUY [{order_status}]: {order_id_str}")
                     action_logs.append(f"✅ LIVE BUY: Deployed ₦{execution_amount:,.2f} into {asset}. Status: {order_status} ({order_id_str})")
