@@ -31,16 +31,27 @@ luno_secret = st.secrets.get("LUNO_API_KEY_SECRET") or os.environ.get("LUNO_API_
 
 if not luno_key or not luno_secret:
     st.error("❌ Luno API credentials missing from Streamlit secrets or environment variables.")
+    st.info("Please configure `LUNO_API_KEY_ID` and `LUNO_API_KEY_SECRET` in your Streamlit Cloud app settings under 'Secrets'.")
     st.stop()
 
 connector = LunoConnector(luno_key, luno_secret)
 
-# Fetch live tickers & balances
+# Fetch live tickers & balances with visual loading spinner and fallback protection
+tickers = ["XBTNGN", "ETHNGN", "SOLNGN"]
+prices = {}
+balances = []
+
 try:
-    tickers = ["XBTNGN", "ETHNGN", "SOLNGN"]
-    prices = {pair: connector.fetch_ticker(pair) for pair in tickers}
-    balances = connector.fetch_balances()
-    
+    with st.spinner("Connecting to Luno Exchange API & fetching market data..."):
+        for pair in tickers:
+            try:
+                prices[pair] = connector.fetch_ticker(pair)
+            except Exception as ticker_err:
+                logger.warning(f"Failed to fetch ticker for {pair}: {ticker_err}")
+                prices[pair] = 0.0
+                
+        balances = connector.fetch_balances()
+        
     ngn_balance, btc_balance, eth_balance, sol_balance = 0.0, 0.0, 0.0, 0.0
     for b in balances:
         asset = b.get("asset")
@@ -55,14 +66,17 @@ try:
             sol_balance += amount
 
     holdings_units = {"XBTNGN": btc_balance, "ETHNGN": eth_balance, "SOLNGN": sol_balance}
-    holdings_val = {pair: holdings_units[pair] * prices[pair] for pair in tickers}
+    holdings_val = {pair: holdings_units[pair] * prices.get(pair, 0.0) for pair in tickers}
     total_crypto_val = sum(holdings_val.values())
     total_portfolio_val = ngn_balance + total_crypto_val
 
 except Exception as api_err:
     st.error(f"🚨 Luno API Connection Error: {str(api_err)}")
     risk_manager.record_api_failure()
-    st.stop()
+    # Fallback to zero-states so dashboard still renders controls and audit logs
+    ngn_balance, total_portfolio_val = 0.0, 0.0
+    prices = {"XBTNGN": 0.0, "ETHNGN": 0.0, "SOLNGN": 0.0}
+    holdings_val = {"XBTNGN": 0.0, "ETHNGN": 0.0, "SOLNGN": 0.0}
 
 # Sidebar Controls
 st.sidebar.header("🕹️ Modular Controls")
@@ -72,8 +86,8 @@ paper_mode = st.sidebar.checkbox("🔒 Paper Trading Mode (Dry Run)", value=conf
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Live Portfolio Capital", f"₦{total_portfolio_val:,.2f}")
 m2.metric("Liquid NGN Wallet", f"₦{ngn_balance:,.2f}")
-m3.metric("XBTNGN Spot Price", f"₦{prices['XBTNGN']:,.2f}")
-m4.metric("ETHNGN Spot Price", f"₦{prices['ETHNGN']:,.2f}")
+m3.metric("XBTNGN Spot Price", f"₦{prices.get('XBTNGN', 0.0):,.2f}")
+m4.metric("ETHNGN Spot Price", f"₦{prices.get('ETHNGN', 0.0):,.2f}")
 
 st.divider()
 
@@ -86,8 +100,12 @@ col_w3.metric("SOLNGN Target", "20%")
 
 if st.button("🚀 Execute Modular Closed-Loop Rebalance", use_container_width=True):
     try:
+        if total_portfolio_val <= 0:
+            st.error("🚨 Portfolio valuation is zero. Cannot evaluate weights.")
+            st.stop()
+            
         current_weights = {
-            pair: holdings_val.get(pair, 0.0) / total_portfolio_val if total_portfolio_val > 0 else 0
+            pair: holdings_val.get(pair, 0.0) / total_portfolio_val
             for pair in tickers
         }
         target_weights = config.get("target_weights")
