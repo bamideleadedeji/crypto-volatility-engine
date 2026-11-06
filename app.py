@@ -443,7 +443,7 @@ if st.session_state["analytics_results"] is not None:
     # Section 4: Autonomous Internal Rebalancing Engine (Zero-Addition / 50-30-20)
     # -------------------------------------------------------------
     st.subheader("⚡ Section 4: Autonomous Internal Rebalancing Engine (Zero-Addition / 50-30-20)")
-    st.caption("Rebalances existing portfolio holdings to strict 50% BTC, 30% ETH, 20% SOL weights by selling overweights internally to fund underweights.")
+    st.caption("Rebalances existing portfolio holdings to strict 50% BTC, 30% ETH, 20% SOL weights using POST form-encoded data (`data=payload`) on Luno's `/marketorder` endpoint.")
 
     TARGET_WEIGHTS = {"XBTNGN": 0.50, "ETHNGN": 0.30, "SOLNGN": 0.20}
 
@@ -499,7 +499,8 @@ if st.session_state["analytics_results"] is not None:
                         try:
                             auth = HTTPBasicAuth(luno_key, luno_secret)
                             payload = {"pair": asset, "type": "SELL", "volume": vol_format}
-                            res = requests.post("https://api.luno.com/api/1/marketorder", auth=auth, params=payload, timeout=10)
+                            # CORRECTED: Using data=payload for POST request body encoding
+                            res = requests.post("https://api.luno.com/api/1/marketorder", auth=auth, data=payload, timeout=10)
                             if res.status_code == 200 and res.text and res.text.strip():
                                 r_data = res.json()
                                 order_id_str = r_data.get("order_id", "SOLD_SPOT")
@@ -538,7 +539,8 @@ if st.session_state["analytics_results"] is not None:
                         try:
                             auth = HTTPBasicAuth(luno_key, luno_secret)
                             payload = {"pair": asset, "type": "BUY", "counter_volume": f"{execution_amount:.2f}"}
-                            res = requests.post("https://api.luno.com/api/1/marketorder", auth=auth, params=payload, timeout=10)
+                            # CORRECTED: Using data=payload for POST request body encoding
+                            res = requests.post("https://api.luno.com/api/1/marketorder", auth=auth, data=payload, timeout=10)
                             if res.status_code == 200 and res.text and res.text.strip():
                                 r_data = res.json()
                                 order_id_str = r_data.get("order_id", "FILLED_SPOT")
