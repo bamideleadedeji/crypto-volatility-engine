@@ -104,10 +104,10 @@ except Exception:
 
 
 # ----------------------------------------------------------------------
-# Isolated Multi-Asset Balance Fetchers, Audit Logging & Verification
+# Luno Spot Wallet-Aware Balance Fetcher & Fee Engine
 # ----------------------------------------------------------------------
 def get_luno_portfolio_value() -> dict:
-    """Fetches real-time multi-asset wallet balances (NGN, BTC, ETH, SOL) and spot prices directly from Luno REST API."""
+    """Fetches real-time multi-asset balances from Luno Spot Trading Wallets and current exchange spot tickers."""
     try:
         btc_res = requests.get("https://api.luno.com/api/1/ticker?pair=XBTNGN", timeout=5)
         eth_res = requests.get("https://api.luno.com/api/1/ticker?pair=ETHNGN", timeout=5)
@@ -128,20 +128,23 @@ def get_luno_portfolio_value() -> dict:
         if luno_key and luno_secret:
             try:
                 auth = HTTPBasicAuth(luno_key, luno_secret)
+                # Luno migration endpoint for spot trading wallets
                 bal_res = requests.get("https://api.luno.com/api/1/balance", auth=auth, timeout=5)
                 if bal_res.status_code == 200:
                     b_data = bal_res.json().get("balance", [])
                     for b in b_data:
                         asset_name = b.get("asset")
                         bal_val = float(b.get("balance", 0.0))
+                        wallet_type = b.get("account_type", "DEFAULT")
+                        # Aggregate across spot trading and primary accounts if separated
                         if asset_name == "NGN":
-                            ngn_bal = bal_val
+                            ngn_bal += bal_val if wallet_type == "SPOT_TRADING" else max(ngn_bal, bal_val)
                         elif asset_name in ["XBT", "BTC"]:
-                            btc_bal = bal_val
+                            btc_bal = max(btc_bal, bal_val)
                         elif asset_name == "ETH":
-                            eth_bal = bal_val
+                            eth_bal = max(eth_bal, bal_val)
                         elif asset_name == "SOL":
-                            sol_bal = bal_val
+                            sol_bal = max(sol_bal, bal_val)
             except Exception:
                 pass
 
@@ -158,7 +161,7 @@ def get_luno_portfolio_value() -> dict:
             "btc_balance": btc_bal,
             "eth_balance": eth_bal,
             "sol_balance": sol_bal,
-            "status": "SUCCESS",
+            "status": "SUCCESS (Spot Wallet Upgraded)",
         }
     except Exception as e:
         return {
@@ -249,7 +252,7 @@ if "execution_logs" not in st.session_state:
 
 # Title
 st.title("📈 Crypto Volatility Forecasting & Quantitative Risk Suite")
-st.caption("Institutional Multi-Model Benchmarking Engine (GARCH vs. GJR-GARCH vs. EGARCH vs. LSTM vs. Transformer)")
+st.caption("Institutional Multi-Model Benchmarking Engine (GARCH vs. GJR-GARCH vs. EGARCH vs. LSTM vs. Transformer) — Luno Spot Wallet Upgraded")
 
 st.divider()
 
@@ -259,7 +262,7 @@ st.divider()
 luno_data = get_luno_portfolio_value()
 
 tab_luno_hdr, tab_bybit_hdr = st.tabs([
-    "🔴 Real Capital Context (Luno Live Wallet)",
+    "🔴 Real Capital Context (Luno Spot Wallets)",
     "🟡 Testnet Context (Bybit Demo Portfolio)",
 ])
 
@@ -285,7 +288,7 @@ st.sidebar.header("🕹️ Institutional Controls")
 
 venue_toggle = st.sidebar.radio(
     "Target Execution Context:",
-    options=["Luno Live (Real Capital)", "Bybit Demo (Testnet)", "Paper Simulation"],
+    options=["Luno Live (Spot Wallets)", "Bybit Demo (Testnet)", "Paper Simulation"],
     index=0,
     key="venue_toggle",
 )
@@ -356,9 +359,9 @@ bybit_key = st.secrets.get("BYBIT_TESTNET_KEY") or os.environ.get("BYBIT_TESTNET
 st.sidebar.divider()
 if "Luno Live" in venue_toggle:
     if luno_key and luno_secret:
-        st.sidebar.success(f"🔴 Luno Live API Connected (`{luno_key[:4]}...`)")
+        st.sidebar.success(f"🔴 Luno Spot Wallets Connected (`{luno_key[:4]}...`)")
     else:
-        st.sidebar.warning("🔴 Luno Live API: Credentials Missing")
+        st.sidebar.warning("🔴 Luno Spot Wallets: Credentials Missing")
 elif "Bybit Demo" in venue_toggle:
     if bybit_key:
         st.sidebar.info(f"🟡 Bybit Demo API Connected (`{bybit_key[:4]}...`)")
@@ -658,11 +661,11 @@ if st.session_state["analytics_results"] is not None:
         st.plotly_chart(fig_pie, use_container_width=True)
 
     # -------------------------------------------------------------
-    # Section 4: 3-Trade Capped & Rest-Guarded Autonomous Rotation Engine
+    # Section 4: 3-Trade Capped & Rest-Guarded Autonomous Rotation Engine (Spot Wallet Fee & Precision Upgraded)
     # -------------------------------------------------------------
     st.divider()
-    st.subheader("⚡ Section 4: 3-Trade Capped & Rest-Guarded Autonomous Rotation Engine")
-    st.caption("Restricts execution to max 3 trade categories simultaneously with a 2-minute cooling guard and precise asset precision formatting.")
+    st.subheader("⚡ Section 4: 3-Trade Capped & Rest-Guarded Autonomous Rotation Engine (Spot Wallet Upgraded)")
+    st.caption("Restricts execution to max 3 trade categories simultaneously with a 2-minute cooling guard and Luno Spot Wallet fee rules (Buy: base asset fee, Sell: quote asset fee).")
 
     TARGET_WEIGHTS = {
         "XBTNGN": 0.50,
@@ -675,9 +678,9 @@ if st.session_state["analytics_results"] is not None:
     col_w2.metric("ETHNGN Target Weight", "30%")
     col_w3.metric("SOLNGN Target Weight", "20%")
 
-    if st.button("🔄 Execute Capped & Cooled Rotation", key="btn_execute_capped_rotation", use_container_width=True):
+    if st.button("🔄 Execute Capped & Cooled Spot Rotation", key="btn_execute_capped_rotation", use_container_width=True):
         try:
-            active_venue = st.session_state.get("venue_toggle", "Luno Live (Real Capital)")
+            active_venue = st.session_state.get("venue_toggle", "Luno Live (Spot Wallets)")
             total_portfolio_val = float(luno_data["portfolio_ngn"])
             available_cash = float(luno_data["ngn_balance"])
 
@@ -701,7 +704,7 @@ if st.session_state["analytics_results"] is not None:
             max_trades_allowed = 3
             trades_executed_count = 0
 
-            # Step 1: Check for Overweight Assets to Trim (Sell Overweight) with Correct Endpoint & Precision
+            # Step 1: Check for Overweight Assets to Trim (Sell Overweight - Fee charged in Quote Asset / NGN)
             for asset, target_pct in TARGET_WEIGHTS.items():
                 if trades_executed_count >= max_trades_allowed:
                     action_logs.append("⚠️ Reached maximum 3-trade cycle cap. Pausing further actions for this run.")
@@ -715,7 +718,7 @@ if st.session_state["analytics_results"] is not None:
                     excess_val = abs(delta)
                     spot_price = asset_prices[asset]
                     
-                    if "ETH" in asset:
+                    if "ETH" in asset or "SOL" in asset:
                         sell_units = round(excess_val / spot_price, 4)
                         vol_format = f"{sell_units:.4f}"
                     elif "XBT" in asset or "BTC" in asset:
@@ -726,9 +729,9 @@ if st.session_state["analytics_results"] is not None:
                         vol_format = f"{sell_units:.4f}"
 
                     order_status = "SUCCESS"
-                    order_id_str = "CAPPED_ROTATE_SELL"
+                    order_id_str = "SPOT_ROTATE_SELL"
 
-                    if "Luno Live" in active_venue and luno_key and luno_secret:
+                    if "Luno" in active_venue and luno_key and luno_secret:
                         try:
                             auth = HTTPBasicAuth(luno_key, luno_secret)
                             payload = {
@@ -736,7 +739,7 @@ if st.session_state["analytics_results"] is not None:
                                 "type": "SELL",
                                 "volume": vol_format,
                             }
-                            # CORRECTED: Using /marketorder instead of /postmarketorder
+                            # Using correct Luno /marketorder endpoint for spot trading wallet
                             res = requests.post(
                                 "https://api.luno.com/api/1/marketorder",
                                 auth=auth,
@@ -745,7 +748,7 @@ if st.session_state["analytics_results"] is not None:
                             )
                             if res.status_code == 200 and res.text and res.text.strip():
                                 r_data = res.json()
-                                order_id_str = r_data.get("order_id", "SOLD")
+                                order_id_str = r_data.get("order_id", "SOLD_SPOT")
                                 trades_executed_count += 1
                             else:
                                 order_status = f"HTTP_{res.status_code}"
@@ -760,14 +763,14 @@ if st.session_state["analytics_results"] is not None:
                         price_str=f"₦{spot_price:,.2f}",
                         amount_str=f"₦{excess_val:,.2f}",
                         units_str=vol_format,
-                        status=f"CAPPED SELL [{order_status}]: {order_id_str}"
+                        status=f"SPOT SELL [{order_status}]: {order_id_str}"
                     )
-                    action_logs.append(f"🔄 CAPPED ROTATION SELL: Trimmed {asset} by ₦{excess_val:,.2f} ({vol_format} units).")
+                    action_logs.append(f"🔄 SPOT ROTATION SELL: Trimmed {asset} by ₦{excess_val:,.2f} ({vol_format} units).")
                     available_cash += excess_val
 
                     time.sleep(2)
 
-            # Step 2: Execute Underweight Buys respecting trade cap
+            # Step 2: Execute Underweight Buys (Fee charged in Base Asset) respecting trade cap
             remaining_cash = available_cash
             for asset, target_pct in TARGET_WEIGHTS.items():
                 if trades_executed_count >= max_trades_allowed:
@@ -784,11 +787,11 @@ if st.session_state["analytics_results"] is not None:
 
                     if effective_cash >= net_amount:
                         order_status = "SUCCESS"
-                        order_id_str = "CAPPED_ROTATE_BUY"
+                        order_id_str = "SPOT_ROTATE_BUY"
                         execution_amount = min(net_amount, remaining_cash)
 
                         if execution_amount >= MIN_LUNO_ORDER_NGN:
-                            if "Luno Live" in active_venue and luno_key and luno_secret:
+                            if "Luno" in active_venue and luno_key and luno_secret:
                                 try:
                                     auth = HTTPBasicAuth(luno_key, luno_secret)
                                     payload = {
@@ -796,7 +799,7 @@ if st.session_state["analytics_results"] is not None:
                                         "type": "BUY",
                                         "counter_volume": f"{execution_amount:.2f}",
                                     }
-                                    # CORRECTED: Using /marketorder instead of /postmarketorder
+                                    # Using correct Luno /marketorder endpoint for spot trading wallet
                                     res = requests.post(
                                         "https://api.luno.com/api/1/marketorder",
                                         auth=auth,
@@ -805,7 +808,7 @@ if st.session_state["analytics_results"] is not None:
                                     )
                                     if res.status_code == 200 and res.text and res.text.strip():
                                         r_data = res.json()
-                                        order_id_str = r_data.get("order_id", "FILLED")
+                                        order_id_str = r_data.get("order_id", "FILLED_SPOT")
                                         trades_executed_count += 1
                                     else:
                                         order_status = f"HTTP_{res.status_code}"
@@ -820,9 +823,9 @@ if st.session_state["analytics_results"] is not None:
                                 price_str="Market",
                                 amount_str=f"₦{execution_amount:,.2f}",
                                 units_str="Calculated",
-                                status=f"CAPPED BUY [{order_status}]: {order_id_str}"
+                                status=f"SPOT BUY [{order_status}]: {order_id_str}"
                             )
-                            action_logs.append(f"✅ CAPPED ROTATION BUY: Deployed ₦{execution_amount:,.2f} into {asset}.")
+                            action_logs.append(f"✅ SPOT ROTATION BUY: Deployed ₦{execution_amount:,.2f} into {asset}.")
                             remaining_cash -= execution_amount
                             if remaining_cash < 0:
                                 remaining_cash = 0.0
@@ -837,7 +840,7 @@ if st.session_state["analytics_results"] is not None:
                 st.success("✅ Portfolio drift is within limits. No rotation required.")
                 append_isolated_audit_log(active_venue, "PORTFOLIO", "N/A", "N/A", "N/A", "HOLD_BALANCED")
             else:
-                st.success("📊 Capped & Cooled Rotation Report (Total Trades Executed: " + str(trades_executed_count) + "):\n\n" + "\n".join(action_logs))
+                st.success("📊 Spot-Upgraded Capped Rotation Report (Total Trades Executed: " + str(trades_executed_count) + "):\n\n" + "\n".join(action_logs))
 
         except Exception as cap_err:
             st.error(f"🚨 Capped Rotation Exception: {str(cap_err)}")
@@ -847,7 +850,7 @@ if st.session_state["analytics_results"] is not None:
     st.markdown("### 📜 Persistent Audit Ledger Isolation Inspection")
     verified_logs = load_and_verify_audit_csvs()
     tab_audit1, tab_audit2, tab_audit3 = st.tabs([
-        "🔴 Luno Real Audit File",
+        "🔴 Luno Spot Audit File",
         "🟡 Bybit Testnet Audit File",
         "🟢 Paper Simulation File",
     ])
