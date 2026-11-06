@@ -55,7 +55,8 @@ DEFAULT_CONFIG = {
     "max_failures": 5,
     "cooldown_minutes": 15,
     "min_order_ngn": 50.0,
-    "max_trades_per_run": 4
+    "max_trades_per_run": 4,
+    "paper_mode": True  # Default to True for safety until live toggle is flipped
 }
 
 def load_or_create_config():
@@ -237,7 +238,7 @@ def retry_with_backoff(retries=3, backoff_in_seconds=2):
 # ----------------------------------------------------------------------
 @retry_with_backoff(retries=3, backoff_in_seconds=2)
 def get_luno_live_portfolio_and_wallet() -> dict:
-    """Fetches real-time Luno spot wallet balances and live market tickers dynamically with zero caching."""
+    """Fetches real-time Luno spot wallet balances and live market tickers dynamically."""
     if not risk_manager.check_circuit_breaker():
         raise Exception("Trading suspended due to active circuit breaker.")
 
@@ -375,7 +376,6 @@ st.title("⚡ Luno Institutional Econometric & Rebalancing Suite")
 st.caption("Live Spot Wallet Execution Backed by RiskManager, CVaR, GARCH, Asymmetric GJR/EGARCH, & SQLite WAL Persistence")
 st.divider()
 
-# Force fresh dynamic live fetch on every render cycle (Zero static variables)
 try:
     live_data = get_luno_live_portfolio_and_wallet()
     total_capital = live_data["total_portfolio_ngn"]
@@ -385,8 +385,12 @@ except Exception as api_err:
     st.stop()
 
 st.sidebar.header("🕹️ Quantitative Controls")
-selected_proxy = st.sidebar.selectbox("Benchmark Proxy", ["BTC-USD", "ETH-USD", "SOL-USD"], index=0)
+selected_pair = st.sidebar.selectbox("Luno Trading Pair Identifier", ["XBTNGN", "ETHNGN", "SOLNGN"], index=0)
+paper_mode_toggle = st.sidebar.checkbox("🔒 Paper Trading Mode (Dry Run)", value=CONFIG.get("paper_mode", True))
 epochs = st.sidebar.slider("Neural Network Epochs", min_value=5, max_value=30, value=10)
+
+proxy_map = {"XBTNGN": "BTC-USD", "ETHNGN": "ETH-USD", "SOLNGN": "SOL-USD"}
+selected_proxy = proxy_map.get(selected_pair, "BTC-USD")
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Live Portfolio Capital", f"₦{total_capital:,.2f}")
@@ -405,12 +409,14 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 ])
 
 with tab1:
-    st.subheader("Autonomous 50/30/20 Internal Rebalancing Engine")
-    st.markdown("""
+    st.subheader("Autonomous 50/30/20 Closed-Loop Rebalancing Engine")
+    st.markdown(f"""
     **Institutional Execution Protocol:**
-    1. **Circuit Breaker & Health Check:** Ensures API stability and self-healing recovery.
-    2. **Portfolio Drift Gate (>3%):** Prevents fee bleed from micro-fluctuations.
-    3. **Two-Phase Execution:** Sells overweight assets first to generate liquidity, then deploys NGN into underweight assets with order-fill polling.
+    * **Current Mode:** `{"PAPER / DRY RUN (Simulated)" if paper_mode_toggle else "LIVE CAPITAL TRADING"}`
+    * **Phase 1:** Executes all overweight **SELL** orders and confirms settlement.
+    * **Phase 2 (Full Refresh):** Refreshes total portfolio valuation, crypto holdings, and settled NGN cash.
+    * **Phase 3:** Executes **BUY** orders using verified fresh cash.
+    * **Phase 4:** Performs final post-execution allocation verification against 50/30/20 targets.
     """)
 
     col_w1, col_w2, col_w3 = st.columns(3)
@@ -418,12 +424,11 @@ with tab1:
     col_w2.metric("ETHNGN Target", "30%")
     col_w3.metric("SOLNGN Target", "20%")
 
-    if st.button("🚀 Execute Quant-Verified Live Rebalance", key="btn_exec_rebalance", use_container_width=True):
+    btn_label = "🧪 Run Paper Simulation Rebalance" if paper_mode_toggle else "🚀 Execute Live Closed-Loop Rebalance"
+    if st.button(btn_label, key="btn_exec_rebalance", use_container_width=True):
         try:
-            # Re-fetch live capital instantly upon execution click
             exec_data = get_luno_live_portfolio_and_wallet()
             portfolio_val = exec_data["total_portfolio_ngn"]
-            cash_bal = exec_data["funded_ngn_wallet"]
             prices = exec_data["prices"]
             holdings_val = exec_data["holdings_val"]
 
@@ -449,13 +454,15 @@ with tab1:
             luno_secret = st.secrets.get("LUNO_API_KEY_SECRET") or os.environ.get("LUNO_API_KEY_SECRET")
             auth = HTTPBasicAuth(luno_key, luno_secret)
 
-            # PHASE 1: SELL OVERWEIGHT ASSETS FIRST
+            # ==========================================================
+            # PHASE 1: EXECUTE ALL SELL ORDERS FIRST
+            # ==========================================================
             for asset, target_pct in TARGET_WEIGHTS.items():
                 if trades_count >= max_trades:
                     break
                 target_val = portfolio_val * target_pct
                 current_val = holdings_val.get(asset, 0.0)
-                delta = target_val - current_val
+                delta = target_val - current_val  # Negative = Overweight
 
                 if abs(delta) > MIN_LUNO_ORDER_NGN and delta < 0:
                     excess_val = abs(delta)
@@ -470,68 +477,111 @@ with tab1:
                     else:
                         vol_format = f"{excess_val / spot_price:.2f}"
 
-                    payload = {"pair": asset, "type": "SELL", "volume": vol_format}
-                    res = requests.post("https://api.luno.com/api/1/marketorder", auth=auth, data=payload, timeout=10)
-
-                    status_str = "SUCCESS"
-                    if res.status_code == 200 and res.text.strip():
-                        r_data = res.json()
-                        order_id = r_data.get("order_id")
-                        if order_id:
-                            filled = confirm_order_fill(order_id, auth)
-                            if filled:
-                                trades_count += 1
-                                cash_bal += excess_val
-                                status_str = f"COMPLETE [ID: {order_id}]"
-                            else:
-                                status_str = f"FILL_TIMEOUT [ID: {order_id}]"
-                        else:
-                            status_str = "SUCCESS_NO_ID"
+                    if paper_mode_toggle:
+                        status_str = "SIMULATED_COMPLETE [PAPER_MODE]"
+                        trades_count += 1
                     else:
-                        status_str = f"HTTP_{res.status_code}"
+                        payload = {"pair": asset, "type": "SELL", "volume": vol_format}
+                        res = requests.post("https://api.luno.com/api/1/marketorder", auth=auth, data=payload, timeout=10)
+                        status_str = "SUCCESS"
+                        if res.status_code == 200 and res.text.strip():
+                            r_data = res.json()
+                            order_id = r_data.get("order_id")
+                            if order_id:
+                                filled = confirm_order_fill(order_id, auth)
+                                if filled:
+                                    trades_count += 1
+                                    status_str = f"COMPLETE [ID: {order_id}]"
+                                else:
+                                    status_str = f"FILL_TIMEOUT [ID: {order_id}]"
+                            else:
+                                status_str = "SUCCESS_NO_ID"
+                        else:
+                            err_detail = res.text[:200] if res.text else "No error text"
+                            status_str = f"HTTP_{res.status_code}: {err_detail}"
 
-                    risk_manager.log_trade_audit("Luno Spot Live", asset, spot_price, excess_val, vol_format, f"SELL [{status_str}]")
-                    action_logs.append(f"🔄 SELL: Trimmed {asset} by ₦{excess_val:,.2f}. Status: {status_str}")
-                    time.sleep(1.5)
+                    risk_manager.log_trade_audit("Luno Spot Engine", asset, spot_price, excess_val, vol_format, f"SELL [{status_str}]")
+                    action_logs.append(f"🔄 SELL: Trimmed {asset} by ₦{excess_val:,.2f} ({vol_format} units). Status: {status_str}")
+                    time.sleep(1.0)
 
-            # PHASE 2: BUY UNDERWEIGHT ASSETS WITH REALIZED NGN CASH
+            # ==========================================================
+            # PHASE 2: REFRESH ENTIRE PORTFOLIO AFTER SELLS (Upgrade #1)
+            # ==========================================================
+            if paper_mode_toggle:
+                # Simulate refreshed cash after sells for paper testing
+                refreshed_data = exec_data.copy()
+                # In simulation, we assume proceeds converted to cash
+            else:
+                refreshed_data = get_luno_live_portfolio_and_wallet()
+
+            refreshed_portfolio_val = refreshed_data["total_portfolio_ngn"]
+            refreshed_holdings_val = refreshed_data["holdings_val"]
+            fresh_cash_bal = refreshed_data["funded_ngn_wallet"]
+
+            # ==========================================================
+            # PHASE 3: EXECUTE BUY ORDERS USING REFRESHED PORTFOLIO STATE
+            # ==========================================================
             for asset, target_pct in TARGET_WEIGHTS.items():
                 if trades_count >= max_trades:
                     break
-                target_val = portfolio_val * target_pct
-                current_val = holdings_val.get(asset, 0.0)
-                delta = target_val - current_val
+                target_val = refreshed_portfolio_val * target_pct
+                current_val = refreshed_holdings_val.get(asset, 0.0)
+                delta = target_val - current_val  # Positive = Underweight
 
-                if delta > MIN_LUNO_ORDER_NGN and cash_bal >= MIN_LUNO_ORDER_NGN:
-                    exec_amount = min(delta, cash_bal)
-                    payload = {"pair": asset, "type": "BUY", "counter_volume": f"{exec_amount:.2f}"}
-                    res = requests.post("https://api.luno.com/api/1/marketorder", auth=auth, data=payload, timeout=10)
+                if delta > MIN_LUNO_ORDER_NGN and (fresh_cash_bal >= MIN_LUNO_ORDER_NGN or paper_mode_toggle):
+                    exec_amount = min(delta, fresh_cash_bal) if not paper_mode_toggle else delta
 
-                    status_str = "SUCCESS"
-                    if res.status_code == 200 and res.text.strip():
-                        r_data = res.json()
-                        order_id = r_data.get("order_id")
-                        if order_id:
-                            filled = confirm_order_fill(order_id, auth)
-                            if filled:
-                                trades_count += 1
-                                cash_bal -= exec_amount
-                                status_str = f"COMPLETE [ID: {order_id}]"
-                            else:
-                                status_str = f"FILL_TIMEOUT [ID: {order_id}]"
-                        else:
-                            status_str = "SUCCESS_NO_ID"
+                    if paper_mode_toggle:
+                        status_str = "SIMULATED_COMPLETE [PAPER_MODE]"
+                        trades_count += 1
                     else:
-                        status_str = f"HTTP_{res.status_code}"
+                        payload = {"pair": asset, "type": "BUY", "counter_volume": f"{exec_amount:.2f}"}
+                        res = requests.post("https://api.luno.com/api/1/marketorder", auth=auth, data=payload, timeout=10)
+                        status_str = "SUCCESS"
+                        if res.status_code == 200 and res.text.strip():
+                            r_data = res.json()
+                            order_id = r_data.get("order_id")
+                            if order_id:
+                                filled = confirm_order_fill(order_id, auth)
+                                if filled:
+                                    trades_count += 1
+                                    fresh_cash_bal -= exec_amount
+                                    status_str = f"COMPLETE [ID: {order_id}]"
+                                else:
+                                    status_str = f"FILL_TIMEOUT [ID: {order_id}]"
+                            else:
+                                status_str = "SUCCESS_NO_ID"
+                        else:
+                            err_detail = res.text[:200] if res.text else "No error text"
+                            status_str = f"HTTP_{res.status_code}: {err_detail}"
 
-                    risk_manager.log_trade_audit("Luno Spot Live", asset, prices[asset], exec_amount, "CounterNGN", f"BUY [{status_str}]")
+                    risk_manager.log_trade_audit("Luno Spot Engine", asset, prices[asset], exec_amount, "CounterNGN", f"BUY [{status_str}]")
                     action_logs.append(f"✅ BUY: Deployed ₦{exec_amount:,.2f} into {asset}. Status: {status_str}")
-                    time.sleep(1.5)
+                    time.sleep(1.0)
+
+            # ==========================================================
+            # PHASE 4: FINAL POST-EXECUTION ALLOCATION VERIFICATION (Upgrade #2)
+            # ==========================================================
+            if not paper_mode_toggle:
+                final_verify_data = get_luno_live_portfolio_and_wallet()
+                final_val = final_verify_data["total_portfolio_ngn"]
+                final_holdings = final_verify_data["holdings_val"]
+                
+                verification_report = ["\n📊 **Final Institutional Allocation Verification:**"]
+                for asset, target_pct in TARGET_WEIGHTS.items():
+                    actual_val = final_holdings.get(asset, 0.0)
+                    actual_pct = (actual_val / final_val) if final_val > 0 else 0.0
+                    diff_pct = abs(actual_pct - target_pct)
+                    status_pass = "PASS ✓" if diff_pct <= 0.01 else "REVIEW ⚠"
+                    verification_report.append(f"- **{asset}**: Target {target_pct*100:.1f}% | Actual {actual_pct*100:.2f}% [{status_pass}]")
+                
+                action_logs.extend(verification_report)
 
             if not action_logs:
                 st.success("✅ Portfolio allocation is balanced within precise 50/30/20 target thresholds.")
             else:
-                st.success(f"📊 Rebalance Execution Complete — Confirmed Fills: {trades_count}\n\n" + "\n".join(action_logs))
+                mode_label = "Paper Simulation" if paper_mode_toggle else "Live Closed-Loop Rebalance"
+                st.success(f"📊 {mode_label} Complete — Executed Actions: {trades_count}\n\n" + "\n".join(action_logs))
 
         except Exception as e:
             st.error(f"🚨 Execution Exception: {str(e)}")
