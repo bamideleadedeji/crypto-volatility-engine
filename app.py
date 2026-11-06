@@ -36,7 +36,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 torch.set_num_threads(1)
 
-# Professional Rotating Logger Setup (Prevents log bloat)
+# Professional Rotating Logger Setup
 log_handler = RotatingFileHandler("engine.log", maxBytes=5 * 1024 * 1024, backupCount=3)
 log_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
 
@@ -49,7 +49,6 @@ DB_NAME = "luno_institutional_engine.db"
 BACKUP_DIR = "db_backups"
 CONFIG_FILE = "config.json"
 
-# Default Institutional Configuration
 DEFAULT_CONFIG = {
     "target_weights": {"XBTNGN": 0.50, "ETHNGN": 0.30, "SOLNGN": 0.20},
     "drift_tolerance": 0.03,
@@ -60,7 +59,6 @@ DEFAULT_CONFIG = {
 }
 
 def load_or_create_config():
-    """Loads configuration from JSON or creates default config file."""
     if not os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "w") as f:
             json.dump(DEFAULT_CONFIG, f, indent=4)
@@ -73,12 +71,10 @@ def load_or_create_config():
 CONFIG = load_or_create_config()
 
 def init_institutional_database():
-    """Initializes SQLite with WAL mode and creates expanded institutional tables."""
     os.makedirs(BACKUP_DIR, exist_ok=True)
     with sqlite3.connect(DB_NAME, timeout=30) as conn:
         cursor = conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL;")
-        
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS audit_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,17 +95,6 @@ def init_institutional_database():
                 last_trip_time TEXT
             )
         ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS risk_metrics_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT,
-                portfolio_value REAL,
-                var_95 REAL,
-                cvar_95 REAL,
-                max_drift REAL
-            )
-        ''')
-        
         cursor.execute("SELECT COUNT(*) FROM circuit_breaker_state")
         if cursor.fetchone()[0] == 0:
             cursor.execute("INSERT INTO circuit_breaker_state (id, failure_count, is_tripped, last_trip_time) VALUES (1, 0, 0, '')")
@@ -117,7 +102,6 @@ def init_institutional_database():
     logger.info("Database initialized successfully in WAL mode.")
 
 def perform_automated_backup():
-    """Performs an automated timestamped backup of the SQLite database."""
     try:
         if os.path.exists(DB_NAME):
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -132,11 +116,9 @@ perform_automated_backup()
 
 
 # ----------------------------------------------------------------------
-# 1. Institutional Risk Manager Class (Fixed Drift Signature)
+# 1. Institutional Risk Manager Class
 # ----------------------------------------------------------------------
 class RiskManager:
-    """Encapsulates self-healing circuit breakers, drift tolerances, and CVaR calculations."""
-    
     def __init__(self, config: dict):
         self.config = config
         self.drift_tolerance = config.get("drift_tolerance", 0.03)
@@ -144,17 +126,13 @@ class RiskManager:
         self.cooldown_minutes = config.get("cooldown_minutes", 15)
 
     def check_circuit_breaker(self) -> bool:
-        """Self-healing circuit breaker with automatic recovery cooldown."""
         with sqlite3.connect(DB_NAME, timeout=30) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT failure_count, is_tripped, last_trip_time FROM circuit_breaker_state WHERE id=1")
             row = cursor.fetchone()
-            
         if not row:
             return True
-            
         failure_count, is_tripped, last_trip_time = row[0], row[1], row[2]
-        
         if is_tripped:
             if last_trip_time:
                 trip_dt = datetime.strptime(last_trip_time, "%Y-%m-%d %H:%M:%S")
@@ -167,15 +145,12 @@ class RiskManager:
         return True
 
     def record_api_failure(self):
-        """Increments failure counter and trips circuit breaker if threshold is reached."""
         with sqlite3.connect(DB_NAME, timeout=30) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT failure_count FROM circuit_breaker_state WHERE id=1")
             count = cursor.fetchone()[0] + 1
-            
             is_tripped = 1 if count >= self.max_failures else 0
             trip_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S") if is_tripped else ""
-            
             cursor.execute('''
                 UPDATE circuit_breaker_state 
                 SET failure_count = ?, is_tripped = ?, last_trip_time = ? 
@@ -186,7 +161,6 @@ class RiskManager:
             logger.error(f"🚨 Circuit breaker tripped after {self.max_failures} consecutive API errors.")
 
     def reset_circuit_breaker(self):
-        """Resets circuit breaker state to normal."""
         with sqlite3.connect(DB_NAME, timeout=30) as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE circuit_breaker_state SET failure_count = 0, is_tripped = 0, last_trip_time = '' WHERE id=1")
@@ -194,7 +168,6 @@ class RiskManager:
         logger.info("Circuit breaker successfully reset to operational state.")
 
     def evaluate_portfolio_drift(self, current_weights: dict, target_weights: dict, drift_tolerance: float = None) -> bool:
-        """Evaluates whether portfolio drift exceeds tolerance to avoid fee bleed."""
         tolerance = drift_tolerance if drift_tolerance is not None else self.drift_tolerance
         max_drift = 0.0
         for asset, target_pct in target_weights.items():
@@ -211,7 +184,6 @@ class RiskManager:
         return True
 
     def calculate_expected_shortfall(self, returns_series: pd.Series, portfolio_capital: float, confidence: float = 0.95) -> dict:
-        """Computes Basel III Expected Shortfall (CVaR)."""
         if returns_series.empty:
             return {"cvar_pct": 0.0, "cvar_ngn": 0.0}
         alpha = 1.0 - confidence
@@ -225,7 +197,6 @@ class RiskManager:
         }
 
     def log_trade_audit(self, venue: str, asset: str, price: float, amount: float, units: str, status: str):
-        """Thread-safe transactional audit log insert."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with sqlite3.connect(DB_NAME, timeout=30) as conn:
             cursor = conn.cursor()
@@ -262,11 +233,11 @@ def retry_with_backoff(retries=3, backoff_in_seconds=2):
 
 
 # ----------------------------------------------------------------------
-# 3. Real-Time Luno Live Portfolio & Wallet Fetcher
+# 3. Real-Time Luno Live Portfolio & Wallet Fetcher (Uncached / Direct)
 # ----------------------------------------------------------------------
 @retry_with_backoff(retries=3, backoff_in_seconds=2)
 def get_luno_live_portfolio_and_wallet() -> dict:
-    """Fetches real-time Luno spot wallet balances and live market tickers dynamically."""
+    """Fetches real-time Luno spot wallet balances and live market tickers dynamically with zero caching."""
     if not risk_manager.check_circuit_breaker():
         raise Exception("Trading suspended due to active circuit breaker.")
 
@@ -330,7 +301,6 @@ def get_luno_live_portfolio_and_wallet() -> dict:
 # 4. Automatic Order-Status Polling (Fill Confirmation)
 # ----------------------------------------------------------------------
 def confirm_order_fill(order_id: str, auth: HTTPBasicAuth, max_polls=5, poll_interval=3) -> bool:
-    """Actively polls Luno's order endpoint to verify 100% fill status before proceeding."""
     url = f"https://api.luno.com/api/1/orders/{order_id}"
     for attempt in range(max_polls):
         try:
@@ -348,7 +318,7 @@ def confirm_order_fill(order_id: str, auth: HTTPBasicAuth, max_polls=5, poll_int
     return False
 
 
-# Safe imports for modular econometric modules
+# Modular econometric imports
 try:
     from data_loader import fetch_crypto_data
 except ImportError:
@@ -405,6 +375,7 @@ st.title("⚡ Luno Institutional Econometric & Rebalancing Suite")
 st.caption("Live Spot Wallet Execution Backed by RiskManager, CVaR, GARCH, Asymmetric GJR/EGARCH, & SQLite WAL Persistence")
 st.divider()
 
+# Force fresh dynamic live fetch on every render cycle (Zero static variables)
 try:
     live_data = get_luno_live_portfolio_and_wallet()
     total_capital = live_data["total_portfolio_ngn"]
@@ -449,6 +420,7 @@ with tab1:
 
     if st.button("🚀 Execute Quant-Verified Live Rebalance", key="btn_exec_rebalance", use_container_width=True):
         try:
+            # Re-fetch live capital instantly upon execution click
             exec_data = get_luno_live_portfolio_and_wallet()
             portfolio_val = exec_data["total_portfolio_ngn"]
             cash_bal = exec_data["funded_ngn_wallet"]
