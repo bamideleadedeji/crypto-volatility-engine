@@ -21,3 +21,6 @@ Timestamp,Venue,Pair,Price_NGN,Amount_NGN,Units_BTC,Status,Order_ID
 2026-11-06 05:53:55,Luno Cron Bot,ETHNGN,"₦3,050,300.00","₦20,021.48",0.0066,FAILED: HTTP 404: 
 2026-11-06 05:53:57,Luno Cron Bot,XBTNGN,"₦104,006,812.00","₦15,061.48",Calculated,FAILED: HTTP 404: 
 2026-11-06 05:54:00,Luno Cron Bot,SOLNGN,"₦123,110.00","₦5,101.52",Calculated,FAILED: HTTP 404: 
+2026-11-06 15:48:13,Luno Cron Bot,ETHNGN,"₦3,050,000.00","₦19,976.84",0.0065,FAILED: Invalid base volume for sell order.
+2026-11-06 15:48:15,Luno Cron Bot,XBTNGN,"₦104,274,374.00","₦15,076.62",Calculated,FAILED: Account has insufficient funds
+2026-11-06 15:48:17,Luno Cron Bot,SOLNGN,"₦124,289.00","₦5,041.95",Calculated,FAILED: Account has insufficient funds
