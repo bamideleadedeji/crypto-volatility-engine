@@ -1,4 +1,9 @@
 import os
+import sys
+
+# Ensure repository root is in sys.path so modules like 'core', 'database', 'execution', 'risk' can be imported when running from app/
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import streamlit as st
 import pandas as pd
 from core.config import load_config
