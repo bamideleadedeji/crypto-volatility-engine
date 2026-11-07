@@ -7,6 +7,13 @@ from database.repository import init_database, fetch_audit_ledger, get_paper_por
 from execution.luno_connector import LunoConnector
 from risk.risk_manager import RiskManager
 
+# Graceful AI / PyTorch Engine Fallback Import
+try:
+    import torch
+    HAS_AI_ENGINE = True
+except Exception:
+    HAS_AI_ENGINE = False
+
 # Initialize core services
 logger = setup_logger("Dashboard")
 config = load_config()
@@ -44,7 +51,7 @@ def fetch_luno_market_data(_connector):
     for pair in tickers:
         try:
             prices[pair] = _connector.fetch_ticker(pair)
-        except Exception as ticker_err:
+        except Exception:
             prices[pair] = 0.0
             
     balances = _connector.fetch_balances()
@@ -80,7 +87,6 @@ try:
 except Exception as api_err:
     st.error(f"🚨 Luno API Connection Error: {str(api_err)}")
     risk_manager.record_api_failure()
-    # Fallback to zero-states so dashboard still renders controls and audit logs
     ngn_balance, total_portfolio_val = 0.0, 0.0
     prices = {"XBTNGN": 0.0, "ETHNGN": 0.0, "SOLNGN": 0.0}
     holdings_val = {"XBTNGN": 0.0, "ETHNGN": 0.0, "SOLNGN": 0.0}
@@ -88,6 +94,11 @@ except Exception as api_err:
 # Sidebar Controls
 st.sidebar.header("🕹️ Modular Controls")
 paper_mode = st.sidebar.checkbox("🔒 Paper Trading Mode (Dry Run)", value=config.get("paper_mode", True))
+
+if HAS_AI_ENGINE:
+    st.sidebar.success("🤖 PyTorch Engine: Active")
+else:
+    st.sidebar.info("ℹ️ PyTorch Engine: Econometric-Only Mode")
 
 if st.sidebar.button("🔄 Clear Cache & Refresh Data"):
     st.cache_data.clear()
