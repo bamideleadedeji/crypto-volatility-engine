@@ -36,6 +36,20 @@ if not luno_key or not luno_secret:
 
 connector = LunoConnector(luno_key, luno_secret)
 
+# Cached Data Fetcher to prevent blocking network hangs on every Streamlit rerun
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_luno_market_data(_connector):
+    tickers = ["XBTNGN", "ETHNGN", "SOLNGN"]
+    prices = {}
+    for pair in tickers:
+        try:
+            prices[pair] = _connector.fetch_ticker(pair)
+        except Exception as ticker_err:
+            prices[pair] = 0.0
+            
+    balances = _connector.fetch_balances()
+    return prices, balances
+
 # Fetch live tickers & balances with visual loading spinner and fallback protection
 tickers = ["XBTNGN", "ETHNGN", "SOLNGN"]
 prices = {}
@@ -43,14 +57,7 @@ balances = []
 
 try:
     with st.spinner("Connecting to Luno Exchange API & fetching market data..."):
-        for pair in tickers:
-            try:
-                prices[pair] = connector.fetch_ticker(pair)
-            except Exception as ticker_err:
-                logger.warning(f"Failed to fetch ticker for {pair}: {ticker_err}")
-                prices[pair] = 0.0
-                
-        balances = connector.fetch_balances()
+        prices, balances = fetch_luno_market_data(connector)
         
     ngn_balance, btc_balance, eth_balance, sol_balance = 0.0, 0.0, 0.0, 0.0
     for b in balances:
@@ -82,6 +89,10 @@ except Exception as api_err:
 st.sidebar.header("🕹️ Modular Controls")
 paper_mode = st.sidebar.checkbox("🔒 Paper Trading Mode (Dry Run)", value=config.get("paper_mode", True))
 
+if st.sidebar.button("🔄 Clear Cache & Refresh Data"):
+    st.cache_data.clear()
+    st.rerun()
+
 # Top Metrics
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Live Portfolio Capital", f"₦{total_portfolio_val:,.2f}")
@@ -108,7 +119,7 @@ if st.button("🚀 Execute Modular Closed-Loop Rebalance", use_container_width=T
             pair: holdings_val.get(pair, 0.0) / total_portfolio_val
             for pair in tickers
         }
-        target_weights = config.get("target_weights")
+        target_weights = config.get("target_weights", {"XBTNGN": 0.50, "ETHNGN": 0.30, "SOLNGN": 0.20})
 
         if not risk_manager.evaluate_portfolio_drift(current_weights, target_weights):
             st.info("⏸️ Rebalance skipped: Portfolio drift is within 3% tolerance threshold.")
