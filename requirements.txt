@@ -10,5 +10,5 @@ scikit-learn>=1.4.0
 yfinance>=0.2.36
 matplotlib>=3.8.2
 plotly>=5.19.0
-ccxt>=4.2.25
+ccxt==4.2.25
 pillow>=10.4.0
