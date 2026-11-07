@@ -159,6 +159,9 @@ if app_mode == "Portfolio & Rebalancing Execution":
             else:
                 st.success("✅ Drift exceeds 3% threshold. Executing corrective rebalancing & Treasury cash sweep:")
                 
+                # Institutional position caps (ICIE Constitution)
+                position_caps = {"XBTNGN": 0.60, "ETHNGN": 0.40, "SOLNGN": 0.30}
+                
                 execution_plan = evaluation["execution_plan"]
                 for pair, details in execution_plan.items():
                     action = details["action"]
@@ -167,7 +170,7 @@ if app_mode == "Portfolio & Rebalancing Execution":
                     # Prevent BUY orders that breach position limits, while permitting corrective SELL orders
                     if action == "BUY":
                         projected_w = (holdings_val[pair] + target_val) / total_portfolio_val
-                        max_allowed = circuit_breaker.position_limits.get(pair, 0.40)
+                        max_allowed = position_caps.get(pair, 0.40)
                         if projected_w > max_allowed:
                             st.warning(f"⚠️ Skipping BUY for {pair}: Projected weight {projected_w*100:.1f}% exceeds max limit ({max_allowed*100}%).")
                             continue
