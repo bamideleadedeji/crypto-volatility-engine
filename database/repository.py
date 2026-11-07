@@ -105,6 +105,7 @@ def update_paper_portfolio(cash: float, units: dict):
         conn.commit()
 
 def check_idempotency(order_hash: str) -> bool:
+    """Checks if an order hash already exists in the orders table to prevent duplicate executions."""
     with sqlite3.connect(DB_NAME, timeout=30) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT status FROM orders WHERE order_hash = ?", (order_hash,))
@@ -112,6 +113,7 @@ def check_idempotency(order_hash: str) -> bool:
     return row is not None
 
 def record_order(order_hash: str, order_id: str, asset: str, side: str, amount: float, status: str):
+    """Records or updates an order hash in the SQLite WAL database."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with sqlite3.connect(DB_NAME, timeout=30) as conn:
         cursor = conn.cursor()
@@ -122,5 +124,6 @@ def record_order(order_hash: str, order_id: str, asset: str, side: str, amount: 
         conn.commit()
 
 def fetch_audit_ledger(limit: int = 50) -> pd.DataFrame:
+    """Fetches recent audit log entries as a Pandas DataFrame for dashboard inspection."""
     with sqlite3.connect(DB_NAME, timeout=30) as conn:
         return pd.read_sql_query(f"SELECT * FROM audit_logs ORDER BY id DESC LIMIT {limit}", conn)
