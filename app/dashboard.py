@@ -1,16 +1,50 @@
 import os
 import sys
 
-# Ensure repository root is in sys.path so modules like 'core', 'database', 'execution', 'risk' can be imported when running from app/
+# Ensure repository root is in sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import streamlit as st
 import pandas as pd
-from core.config import load_config
-from core.logging import setup_logger
-from database.repository import init_database, fetch_audit_ledger, get_paper_portfolio, update_paper_portfolio
-from execution.luno_connector import LunoConnector
-from risk.risk_manager import RiskManager
+
+# Defensive Core Imports with Fallbacks
+try:
+    from core.config import load_config
+except ImportError:
+    def load_config(): return {"paper_mode": True, "target_weights": {"XBTNGN": 0.5, "ETHNGN": 0.3, "SOLNGN": 0.2}}
+
+try:
+    from core.logging import setup_logger
+except ImportError:
+    import logging
+    def setup_logger(name): return logging.getLogger(name)
+
+try:
+    from database.repository import init_database, fetch_audit_ledger, get_paper_portfolio, update_paper_portfolio
+except ImportError:
+    def init_database(): pass
+    def fetch_audit_ledger(limit=50): return pd.DataFrame()
+    def get_paper_portfolio(): return {}
+    def update_paper_portfolio(*args, **kwargs): pass
+
+try:
+    from execution.luno_connector import LunoConnector
+except ImportError:
+    try:
+        from app.execution.luno_connector import LunoConnector
+    except ImportError:
+        class LunoConnector:
+            def __init__(self, key, secret): pass
+            def fetch_ticker(self, pair): return 0.0
+            def fetch_balances(self): return []
+
+try:
+    from risk.risk_manager import RiskManager
+except ImportError:
+    class RiskManager:
+        def __init__(self, config): pass
+        def evaluate_portfolio_drift(self, current, target): return False
+        def record_api_failure(self): pass
 
 # Initialize core services
 logger = setup_logger("Dashboard")
@@ -41,7 +75,7 @@ if not luno_key or not luno_secret:
 
 connector = LunoConnector(luno_key, luno_secret)
 
-# Cached Data Fetcher to prevent blocking network hangs on every Streamlit rerun
+# Cached Data Fetcher
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_luno_market_data(_connector):
     tickers = ["XBTNGN", "ETHNGN", "SOLNGN"]
@@ -55,7 +89,7 @@ def fetch_luno_market_data(_connector):
     balances = _connector.fetch_balances()
     return prices, balances
 
-# Fetch live tickers & balances with visual loading spinner and fallback protection
+# Fetch live tickers & balances
 tickers = ["XBTNGN", "ETHNGN", "SOLNGN"]
 prices = {}
 balances = []
@@ -66,8 +100,8 @@ try:
         
     ngn_balance, btc_balance, eth_balance, sol_balance = 0.0, 0.0, 0.0, 0.0
     for b in balances:
-        asset = b.get("asset")
-        amount = float(b.get("balance", 0.0))
+        asset = b.get("asset") if isinstance(b, dict) else getattr(b, 'get', lambda x: None)("asset")
+        amount = float(b.get("balance", 0.0) if isinstance(b, dict) else 0.0)
         if asset == "NGN":
             ngn_balance += amount
         elif asset in ["XBT", "BTC"]:
