@@ -58,6 +58,17 @@ def init_database():
                 timestamp TEXT
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS performance_attribution (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                gross_return REAL,
+                net_return REAL,
+                fees_paid REAL,
+                primary_driver TEXT,
+                narrative TEXT
+            )
+        ''')
         
         cursor.execute("SELECT COUNT(*) FROM circuit_breaker_state")
         if cursor.fetchone()[0] == 0:
@@ -123,7 +134,24 @@ def record_order(order_hash: str, order_id: str, asset: str, side: str, amount: 
         ''', (order_hash, order_id, asset, side, amount, status, timestamp))
         conn.commit()
 
+def log_performance_attribution(gross_return: float, net_return: float, fees_paid: float, primary_driver: str, narrative: str):
+    """Records monthly performance attribution reports to SQLite WAL."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with sqlite3.connect(DB_NAME, timeout=30) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO performance_attribution (timestamp, gross_return, net_return, fees_paid, primary_driver, narrative)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (timestamp, gross_return, net_return, fees_paid, primary_driver, narrative))
+        conn.commit()
+    logger.info(f"Performance Attribution Logged -> Net Return: {net_return:.2f}% | Driver: {primary_driver}")
+
 def fetch_audit_ledger(limit: int = 50) -> pd.DataFrame:
     """Fetches recent audit log entries as a Pandas DataFrame for dashboard inspection."""
     with sqlite3.connect(DB_NAME, timeout=30) as conn:
         return pd.read_sql_query(f"SELECT * FROM audit_logs ORDER BY id DESC LIMIT {limit}", conn)
+
+def fetch_performance_attribution_ledger(limit: int = 20) -> pd.DataFrame:
+    """Fetches stored monthly performance attribution reports."""
+    with sqlite3.connect(DB_NAME, timeout=30) as conn:
+        return pd.read_sql_query(f"SELECT * FROM performance_attribution ORDER BY id DESC LIMIT {limit}", conn)
