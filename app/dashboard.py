@@ -7,13 +7,6 @@ from database.repository import init_database, fetch_audit_ledger, get_paper_por
 from execution.luno_connector import LunoConnector
 from risk.risk_manager import RiskManager
 
-# Graceful AI / PyTorch Engine Fallback Import
-try:
-    import torch
-    HAS_AI_ENGINE = True
-except Exception:
-    HAS_AI_ENGINE = False
-
 # Initialize core services
 logger = setup_logger("Dashboard")
 config = load_config()
@@ -94,11 +87,7 @@ except Exception as api_err:
 # Sidebar Controls
 st.sidebar.header("🕹️ Modular Controls")
 paper_mode = st.sidebar.checkbox("🔒 Paper Trading Mode (Dry Run)", value=config.get("paper_mode", True))
-
-if HAS_AI_ENGINE:
-    st.sidebar.success("🤖 PyTorch Engine: Active")
-else:
-    st.sidebar.info("ℹ️ PyTorch Engine: Econometric-Only Mode")
+st.sidebar.success("📈 Econometric Engine: Active (GARCH/ARCH)")
 
 if st.sidebar.button("🔄 Clear Cache & Refresh Data"):
     st.cache_data.clear()
