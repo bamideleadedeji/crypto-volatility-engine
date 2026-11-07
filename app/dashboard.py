@@ -11,12 +11,13 @@ import plotly.graph_objects as go
 
 from core.config import load_config
 from core.logging import setup_logger
-from database.repository import init_database, fetch_audit_ledger, get_paper_portfolio, update_paper_portfolio, log_audit_event
+from database.repository import init_database, fetch_audit_ledger, log_audit, get_paper_portfolio, update_paper_portfolio
 from execution.luno_connector import LunoConnector
+from execution.order_executor import InstitutionalOrderExecutor
 from risk.risk_manager import RiskManager
 from risk.circuit_breakers import CircuitBreakerManager
 from strategy.rebalancer import AutonomousRebalancer
-from risk.portfolio_econometrics import PortfolioEconometricsEngine
+from risk.portfolio_econometric import PortfolioEconometricEngine
 from backtest.engine import BacktestEngine
 
 # Optional Econometric import check
@@ -34,7 +35,7 @@ init_database()
 risk_manager = RiskManager(config)
 circuit_breaker = CircuitBreakerManager()
 rebalancer = AutonomousRebalancer(target_weights=config.get("target_weights", {"XBTNGN": 0.50, "ETHNGN": 0.30, "SOLNGN": 0.20}))
-quant_engine = PortfolioEconometricsEngine()
+quant_engine = PortfolioEconometricEngine()
 backtest_engine = BacktestEngine(initial_capital=10_000_000.0)
 
 st.set_page_config(
@@ -56,6 +57,7 @@ if not luno_key or not luno_secret:
     st.warning("⚠️ Luno API credentials not detected in Streamlit secrets. Operating in Offline Simulation & Paper Mode.")
 
 connector = LunoConnector(luno_key, luno_secret) if (luno_key and luno_secret) else None
+order_executor = InstitutionalOrderExecutor(connector, circuit_breaker) if connector else None
 
 # Cached Market Data Fetcher
 @st.cache_data(ttl=60, show_spinner=False)
@@ -63,7 +65,6 @@ def fetch_luno_market_data(_connector, tickers):
     prices = {}
     balances = []
     if not _connector:
-        # Fallback simulation prices for testing/offline mode
         return {"XBTNGN": 65000000.0, "ETHNGN": 3800000.0, "SOLNGN": 220000.0}, [{"asset": "NGN", "balance": "2500000.0"}, {"asset": "XBT", "balance": "0.05"}, {"asset": "ETH", "balance": "0.4"}, {"asset": "SOL", "balance": "5.0"}]
     for pair in tickers:
         try:
@@ -152,17 +153,31 @@ if app_mode == "Portfolio & Rebalancing Execution":
             current_weights_dict = {p: holdings_val[p] / total_portfolio_val for p in tickers}
             valid_pos, pos_msg = circuit_breaker.validate_position_limits(current_weights_dict)
             if not valid_pos:
-                st.error(f"🚨 Circuit Breaker Block: {pos_msg}")
+                st.error(f"🚨 Circuit Breaker Position Limit Block: {pos_msg}")
+                log_audit(venue="SYSTEM", asset="PORTFOLIO", price=0.0, amount=total_portfolio_val, units="ALL", status="POSITION_LIMIT_REJECTED")
                 st.stop()
 
             if not evaluation["rebalance_triggered"]:
                 st.info("⏸️ Rebalance skipped: Portfolio drift is within the 3% tolerance threshold[cite: 1]. No action required.")
             else:
                 st.success("✅ Drift exceeds 3% threshold. Executing rebalancing actions:")
-                st.write(evaluation["execution_plan"])
                 
-                # Log audit event to SQLite WAL database
-                log_audit_event("REBALANCE_EXECUTION", f"Rebalanced portfolio. Max drift: {evaluation['max_drift_percentage']}%")
+                execution_plan = evaluation["execution_plan"]
+                for pair, details in execution_plan.items():
+                    action = details["action"]
+                    target_val = details["target_adjustment_val"]
+                    
+                    if action in ["BUY", "SELL"] and target_val > 50:
+                        current_price = prices.get(pair, 0.0)
+                        if current_price > 0:
+                            if order_executor and not paper_mode:
+                                res = order_executor.execute_market_order(pair=pair, side=action, counter_volume=str(round(target_val, 2)))
+                                st.write(f"Executed {action} for {pair}: {res['status']}")
+                            else:
+                                st.info(f"[PAPER MODE / SIMULATION] Would execute {action} on {pair} for value ₦{target_val:,.2f}.")
+                                log_audit(venue="LUNO", asset=pair, price=current_price, amount=target_val, units="SIMULATED", status=f"PAPER_{action}")
+                                
+                st.success("Autonomous rebalancing cycle completed and recorded to SQLite WAL audit logs[cite: 1].")
         except Exception as e:
             st.error(f"🚨 Execution Error: {str(e)}")
 
@@ -222,7 +237,7 @@ elif app_mode == "GARCH Volatility & VaR Suite":
 # --- MODULE 3: BACKTEST SIMULATION ENGINE ---
 elif app_mode == "Backtest Simulation Engine":
     st.subheader("Institutional Backtest Simulation Engine")
-    st.caption("Compare Buy & Hold versus the Autonomous Rebalancing & GARCH Engine factoring in fees[cite: 1].")
+    st.caption("Compare Buy & Hold versus the Autonomous Rebalancing & GARCH Engine factoring in transaction fees[cite: 1].")
 
     bt_days = st.slider("Backtest Historical Period (Days)", min_value=30, max_value=365, value=180)
 
