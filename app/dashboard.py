@@ -145,14 +145,14 @@ if app_mode == "Portfolio & Rebalancing Execution":
         }
         for pair in tickers
     ])
-    st.dataframe(breakdown_df, width='stretch')
+    st.dataframe(breakdown_df, width="stretch")
 
     # Evaluate current drift via AutonomousRebalancer
     evaluation = rebalancer.evaluate_rebalance(holdings_val, ngn_balance, total_portfolio_val)
     
     st.info(f"📊 **Portfolio Max Drift:** {evaluation.get('max_drift_percentage', 0.0)}% (Threshold: 3.0%)")
 
-    if st.button("🚀 Execute Autonomous Closed-Loop Rebalance", width='stretch'):
+    if st.button("🚀 Execute Autonomous Closed-Loop Rebalance", width="stretch"):
         try:
             if not evaluation["rebalance_triggered"]:
                 st.info("⏸️ Rebalance skipped: Portfolio drift is within the 3% tolerance threshold. No action required.")
@@ -173,8 +173,8 @@ if app_mode == "Portfolio & Rebalancing Execution":
                     st.info("No overweight assets to shed in this cycle.")
                 
                 for pair, details in phase1_sells.items():
-                    target_val = details["target_adjustment_val"]
-                    current_price = prices.get(pair, 0.0)
+                    target_val = float(details["target_adjustment_val"])
+                    current_price = float(prices.get(pair, 0.0))
                     
                     if target_val < min_order_threshold:
                         st.warning(f"⚠️ Skipping SELL for {pair}: Order value ₦{target_val:,.2f} is below Luno minimum exchange threshold (₦{min_order_threshold:,.2f}).")
@@ -182,15 +182,19 @@ if app_mode == "Portfolio & Rebalancing Execution":
 
                     if current_price > 0:
                         if order_executor and not paper_mode:
+                            # Matches InstitutionalOrderExecutor signature exactly:
+                            # execute_market_order(pair, side, target_val=..., current_price=...)
                             res = order_executor.execute_market_order(
-                                pair=pair, 
-                                side="SELL", 
-                                target_val=target_val, 
-                                current_price=current_price
+                                pair=pair,
+                                side="SELL",
+                                target_val=target_val,
+                                current_price=current_price,
                             )
                             st.write(f"Executed SELL on {pair}: {res.get('status')}")
-                            if res.get('status') == 'SUCCESS':
+                            if res.get("status") == "SUCCESS":
                                 projected_ngn_cash += target_val
+                            elif res.get("status") in ("REJECTED", "BLOCKED", "FAILED"):
+                                st.warning(f"SELL {pair} result: {res}")
                         else:
                             st.info(f"[PAPER MODE / SIMULATION] Executed SELL on {pair} for ₦{target_val:,.2f}. Proceeds swept to NGN wallet.")
                             log_audit(venue="LUNO", asset=pair, price=current_price, amount=target_val, units="SIMULATED", status="PAPER_SELL")
@@ -204,16 +208,16 @@ if app_mode == "Portfolio & Rebalancing Execution":
                     st.info("No underweight assets require accumulation in this cycle.")
 
                 for pair, details in phase2_buys.items():
-                    target_val = details["target_adjustment_val"]
-                    current_price = prices.get(pair, 0.0)
+                    target_val = float(details["target_adjustment_val"])
+                    current_price = float(prices.get(pair, 0.0))
                     
-                    projected_w = (holdings_val[pair] + target_val) / total_portfolio_val
+                    projected_w = (holdings_val[pair] + target_val) / total_portfolio_val if total_portfolio_val > 0 else 0.0
                     max_allowed = position_caps.get(pair, 0.40)
                     if projected_w > max_allowed:
                         st.warning(f"⚠️ Skipping BUY for {pair}: Projected weight {projected_w*100:.1f}% exceeds max limit ({max_allowed*100}%).")
                         continue
 
-                    allocatable_cash = min(target_val, projected_ngn_cash * 0.90) # Reserve 10% buffer
+                    allocatable_cash = min(target_val, projected_ngn_cash * 0.90)  # Reserve 10% buffer
                     
                     if allocatable_cash < min_order_threshold:
                         st.warning(f"⚠️ Skipping BUY for {pair}: Insufficient NGN liquidity (Available: ₦{projected_ngn_cash:,.2f}) after Phase 1 sells.")
@@ -221,15 +225,18 @@ if app_mode == "Portfolio & Rebalancing Execution":
 
                     if current_price > 0:
                         if order_executor and not paper_mode:
+                            # Matches InstitutionalOrderExecutor signature exactly
                             res = order_executor.execute_market_order(
-                                pair=pair, 
-                                side="BUY", 
-                                target_val=allocatable_cash, 
-                                current_price=current_price
+                                pair=pair,
+                                side="BUY",
+                                target_val=allocatable_cash,
+                                current_price=current_price,
                             )
                             st.write(f"Executed BUY on {pair}: {res.get('status')}")
-                            if res.get('status') == 'SUCCESS':
+                            if res.get("status") == "SUCCESS":
                                 projected_ngn_cash -= allocatable_cash
+                            elif res.get("status") in ("REJECTED", "BLOCKED", "FAILED"):
+                                st.warning(f"BUY {pair} result: {res}")
                         else:
                             st.info(f"[PAPER MODE / SIMULATION] Executed BUY on {pair} for ₦{allocatable_cash:,.2f} funded from NGN reserve.")
                             log_audit(venue="LUNO", asset=pair, price=current_price, amount=allocatable_cash, units="SIMULATED", status="PAPER_BUY")
@@ -239,6 +246,7 @@ if app_mode == "Portfolio & Rebalancing Execution":
                 log_audit(venue="SYSTEM", asset="PORTFOLIO", price=0.0, amount=total_portfolio_val, units="ALL", status="TWO_PHASE_REBALANCE_SUCCESS")
         except Exception as e:
             st.error(f"🚨 Execution Error: {str(e)}")
+            logger.exception("Rebalance execution failed")
 
 # --- MODULE 2: GARCH VOLATILITY & VaR SUITE ---
 elif app_mode == "GARCH Volatility & VaR Suite":
@@ -252,7 +260,7 @@ elif app_mode == "GARCH Volatility & VaR Suite":
     with col_opt3:
         var_horizon = st.number_input("VaR Horizon (Days)", min_value=1, max_value=30, value=1)
 
-    if st.button("📈 Run Econometric Estimation & Covariance Shrinkage", width='stretch'):
+    if st.button("📈 Run Econometric Estimation & Covariance Shrinkage", width="stretch"):
         with st.spinner("Fitting GARCH models with Student-t innovations & calculating Ledoit-Wolf shrinkage..."):
             np.random.seed(42)
             dates = pd.date_range(end=pd.Timestamp.today(), periods=lookback_window, freq="D")
@@ -276,22 +284,31 @@ elif app_mode == "GARCH Volatility & VaR Suite":
             st.success("✅ Econometric pipeline successfully computed.")
 
             st.markdown("### 📊 Portfolio Value at Risk (VaR) & Expected Shortfall (CVaR)")
-            st.dataframe(pd.DataFrame(risk_metrics).T, width='stretch')
+            st.dataframe(pd.DataFrame(risk_metrics).T, width="stretch")
 
             st.markdown("### 🧮 Ledoit-Wolf Shrinkage Covariance Matrix")
-            st.dataframe(cov_matrix, width='stretch')
+            st.dataframe(cov_matrix, width="stretch")
 
             asset_to_fit = st.selectbox("Inspect Asset Conditional Volatility", tickers)
             garch_result = quant_engine.fit_optimized_garch(returns_df[asset_to_fit], model_type=selected_model)
             
-            if garch_result["success"]:
+            if garch_result.get("success"):
                 st.info(f"Model Fit Successful | Persistence Parameter (Alpha + Beta): {garch_result['persistence']:.4f}")
 
             fig_vol = go.Figure()
             fig_vol.add_trace(go.Scatter(x=dates, y=returns_df[asset_to_fit], mode='lines', name='Log Returns', line=dict(color='gray', width=1)))
-            fig_vol.add_trace(go.Scatter(x=dates, y=garch_result['conditional_volatility'], mode='lines', name=f'{selected_model} Volatility', line=dict(color='cyan', width=2)))
-            fig_vol.update_layout(title=f"{asset_to_fit} — {selected_model} Volatility Dynamics (Student-t Innovations)", template="plotly_dark")
-            st.plotly_chart(fig_vol, width='stretch')
+            fig_vol.add_trace(go.Scatter(
+                x=dates,
+                y=garch_result.get("conditional_volatility", []),
+                mode='lines',
+                name=f'{selected_model} Volatility',
+                line=dict(color='cyan', width=2)
+            ))
+            fig_vol.update_layout(
+                title=f"{asset_to_fit} — {selected_model} Volatility Dynamics (Student-t Innovations)",
+                template="plotly_dark"
+            )
+            st.plotly_chart(fig_vol, width="stretch")
 
 # --- MODULE 3: BACKTEST SIMULATION ENGINE ---
 elif app_mode == "Backtest Simulation Engine":
@@ -300,7 +317,7 @@ elif app_mode == "Backtest Simulation Engine":
 
     bt_days = st.slider("Backtest Historical Period (Days)", min_value=30, max_value=365, value=180)
 
-    if st.button("🚀 Run Backtest Simulation", width='stretch'):
+    if st.button("🚀 Run Backtest Simulation", width="stretch"):
         with st.spinner("Running historical backtest simulation..."):
             np.random.seed(100)
             bt_dates = pd.date_range(end=pd.Timestamp.today(), periods=bt_days, freq="D")
@@ -341,7 +358,7 @@ elif app_mode == "Market Regime & Attribution":
     st.divider()
     st.markdown("### 📊 Monthly Performance Attribution Audit (Section 19)")
     
-    if st.button("Generate Monthly Attribution Report", width='stretch'):
+    if st.button("Generate Monthly Attribution Report", width="stretch"):
         dummy_returns = {"XBTNGN": 0.08, "ETHNGN": 0.05, "SOLNGN": -0.02}
         report = attribution_engine.compute_monthly_attribution(
             portfolio_start_val=10_000_000.0,
@@ -358,7 +375,7 @@ elif app_mode == "SQLite Audit Ledger":
     st.subheader("📜 SQLite WAL Audit Ledger & Event History")
     audit_df = fetch_audit_ledger(100)
     if not audit_df.empty:
-        st.dataframe(audit_df, width='stretch')
+        st.dataframe(audit_df, width="stretch")
     else:
         st.info("No audit logs recorded in SQLite WAL database yet. Execute a rebalance or trigger simulation events to populate the ledger.")
 
