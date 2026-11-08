@@ -35,11 +35,11 @@ class LunoConnector(BrokerInterface):
     def place_market_order(self, pair: str, side: str, volume: str = None, counter_volume: str = None) -> dict:
         """
         Executes a market order (BUY/SELL) on Luno with strict validation.
-        Enforces either volume or counter_volume parameters.
+        Enforces base_volume (for sells) or counter_volume (for buys) matching Luno API specs.
         """
         payload = {"pair": pair, "type": side.upper()}
         if volume:
-            payload["volume"] = str(volume)
+            payload["base_volume"] = str(volume)  # Fixed: Luno expects base_volume, not volume
         if counter_volume:
             payload["counter_volume"] = str(counter_volume)
             
