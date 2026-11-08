@@ -26,8 +26,8 @@ class InstitutionalOrderExecutor:
         """
         estimated_val = float(target_val) if target_val else 0.0
 
-        # 1. Generate Unique Order Hash (Updated to include hour/minute to avoid stale same-day blocks)
-        raw_hash_string = f"{pair}-{side}-{estimated_val}-{datetime.now().strftime('%Y%m%d%H%M')}"
+        # 1. Generate Unique Order Hash (Updated to include seconds %Y%m%d%H%M%S for precise cycle separation)
+        raw_hash_string = f"{pair}-{side}-{estimated_val}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
         order_hash = hashlib.sha256(raw_hash_string.encode()).hexdigest()
 
         if check_idempotency(order_hash):
@@ -36,7 +36,7 @@ class InstitutionalOrderExecutor:
             log_audit(venue="LUNO", asset=pair, price=current_price, amount=estimated_val, units="DUPLICATE", status="DUPLICATE_BLOCKED")
             return {"status": "BLOCKED", "reason": "Duplicate order execution attempt detected and blocked."}
 
-        # 2. Enforce Circuit Breakers & Position Limits
+        # 2. Enforce Circuit Breakers & Position Limits[cite: 1]
         passed, reason = self.circuit_breaker.validate_order(
             asset_pair=pair,
             order_value=estimated_val,
@@ -76,7 +76,7 @@ class InstitutionalOrderExecutor:
             
             order_id = response.get("order_id", "UNKNOWN")
             
-            # 5. Record to Orders Table & Audit Ledger
+            # 5. Record to Orders Table & Audit Ledger (ICIE Section 16)[cite: 1]
             record_order(
                 order_hash=order_hash,
                 order_id=order_id,
