@@ -7,8 +7,9 @@ logger = logging.getLogger("AutonomousRebalancer")
 class AutonomousRebalancer:
     """
     Enforces disciplined 50/30/20 portfolio rebalancing without emotional bias.
-    Applies the 3% drift rule, directional constraints, and a two-phase self-funding 
-    treasury cash rotation (Sells generate liquidity, Buys consume liquidity).
+    Applies the 3% drift rule, directional constraints, a two-phase self-funding 
+    treasury cash rotation (Sells generate liquidity, Buys consume liquidity), 
+    and strict adherence to Luno's ₦50 minimum order threshold.
     """
 
     def __init__(self, target_weights: dict = None, drift_threshold: float = 0.03, min_cash_reserve_pct: float = 0.10, fee_rate: float = 0.001):
@@ -60,13 +61,13 @@ class AutonomousRebalancer:
                 if diff_val < 0:
                     # Overweight -> Phase 1 SELL (Generates NGN cash)
                     excess_val = abs(diff_val)
-                    if excess_val > 50: # Minimum order threshold ₦50
+                    if excess_val >= 50.0:  # Luno minimum order threshold ₦50
                         sell_actions[pair] = {
                             "action": "SELL",
                             "phase": 1,
                             "target_adjustment_val": excess_val,
                             "estimated_fee": excess_val * self.fee_rate,
-                            "treasury_effect": "PROCEEDS_SWAPTED_TO_NGN_WALLET",
+                            "treasury_effect": "PROCEEDS_SWAPPED_TO_NGN_WALLET",
                             "reason": f"Drift {drift*100:.2f}% exceeds threshold. Selling excess to recapitalize NGN."
                         }
                     else:
@@ -74,18 +75,26 @@ class AutonomousRebalancer:
                             "action": "HOLD",
                             "phase": 0,
                             "target_adjustment_val": 0.0,
-                            "reason": "Overweight drift, but below minimum order size threshold."
+                            "reason": "Overweight drift, but below Luno's ₦50 minimum order threshold."
                         }
                 elif diff_val > 0:
                     # Underweight -> Phase 2 BUY (Funded by NGN reserve + projected sell proceeds)
-                    buy_actions[pair] = {
-                        "action": "BUY",
-                        "phase": 2,
-                        "target_adjustment_val": diff_val,
-                        "estimated_fee": diff_val * self.fee_rate,
-                        "treasury_effect": "FUNDED_FROM_SELF_FUNDING_POOL",
-                        "reason": f"Drift {drift*100:.2f}% requires accumulation."
-                    }
+                    if diff_val >= 50.0:  # Luno minimum order threshold ₦50
+                        buy_actions[pair] = {
+                            "action": "BUY",
+                            "phase": 2,
+                            "target_adjustment_val": diff_val,
+                            "estimated_fee": diff_val * self.fee_rate,
+                            "treasury_effect": "FUNDED_FROM_SELF_FUNDING_POOL",
+                            "reason": f"Drift {drift*100:.2f}% requires accumulation."
+                        }
+                    else:
+                        hold_actions[pair] = {
+                            "action": "HOLD",
+                            "phase": 0,
+                            "target_adjustment_val": 0.0,
+                            "reason": "Underweight drift, but below Luno's ₦50 minimum order threshold."
+                        }
             else:
                 hold_actions[pair] = {
                     "action": "HOLD",
