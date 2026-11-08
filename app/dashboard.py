@@ -361,3 +361,4 @@ elif app_mode == "SQLite Audit Ledger":
         st.dataframe(audit_df, width='stretch')
     else:
         st.info("No audit logs recorded in SQLite WAL database yet. Execute a rebalance or trigger simulation events to populate the ledger.")
+
