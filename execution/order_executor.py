@@ -19,17 +19,25 @@ class InstitutionalOrderExecutor:
         self.circuit_breaker = circuit_breaker
         self.daily_trades_count = 0
 
-    def execute_market_order(self, pair: str, side: str, target_val: float = 0.0, current_price: float = 0.0, daily_pnl_pct: float = 0.0) -> dict:
+    def execute_market_order(self, pair: str, side: str, target_val: float = 0.0, current_price: float = 0.0, daily_pnl_pct: float = 0.0, **kwargs) -> dict:
         """
         Validates circuit breakers, checks idempotency hash, maps Luno volume parameters correctly,
         executes via Luno, and records audits and orders to SQLite WAL tables.
+        Accepts **kwargs to guarantee zero unexpected keyword argument errors.
         """
+        # Fallback extraction if kwargs contains volume or counter_volume from legacy calls
+        if target_val <= 0:
+            if "volume" in kwargs:
+                target_val = float(kwargs["volume"]) * current_price if current_price > 0 else 0.0
+            elif "counter_volume" in kwargs:
+                target_val = float(kwargs["counter_volume"])
+
         estimated_val = float(target_val) if target_val > 0 else 0.0
 
         if estimated_val <= 0:
             return {"status": "FAILED", "error": f"Invalid target value ({estimated_val}) provided for order execution."}
 
-        # 1. Generate Unique Order Hash for Idempotency Protection (Keyed to seconds for clean cycle testing)
+        # 1. Generate Unique Order Hash for Idempotency Protection
         raw_hash_string = f"{pair}-{side.upper()}-{estimated_val:.2f}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
         order_hash = hashlib.sha256(raw_hash_string.encode()).hexdigest()
 
@@ -62,7 +70,6 @@ class InstitutionalOrderExecutor:
             if current_price <= 0:
                 return {"status": "FAILED", "error": f"Invalid spot price ({current_price}) provided for SELL order base volume calculation."}
             
-            # Calculate exact crypto units (base volume) from target NGN value / spot price
             crypto_units = estimated_val / current_price
             precision = 8 if "XBT" in pair or "BTC" in pair else 6
             volume = f"{crypto_units:.{precision}f}"
