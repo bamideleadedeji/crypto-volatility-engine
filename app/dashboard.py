@@ -157,36 +157,88 @@ if app_mode == "Portfolio & Rebalancing Execution":
             if not evaluation["rebalance_triggered"]:
                 st.info("⏸️ Rebalance skipped: Portfolio drift is within the 3% tolerance threshold. No action required.")
             else:
-                st.success("✅ Drift exceeds 3% threshold. Executing corrective rebalancing & Treasury cash sweep:")
+                st.success("✅ Drift exceeds 3% threshold. Executing Two-Phase Self-Funding Rebalance & Treasury Cash Sweep:")
                 
-                # Institutional position caps (ICIE Constitution)
                 position_caps = {"XBTNGN": 0.60, "ETHNGN": 0.40, "SOLNGN": 0.30}
-                
                 execution_plan = evaluation["execution_plan"]
-                for pair, details in execution_plan.items():
-                    action = details["action"]
-                    target_val = details["target_adjustment_val"]
-                    
-                    # Prevent BUY orders that breach position limits, while permitting corrective SELL orders
-                    if action == "BUY":
-                        projected_w = (holdings_val[pair] + target_val) / total_portfolio_val
-                        max_allowed = position_caps.get(pair, 0.40)
-                        if projected_w > max_allowed:
-                            st.warning(f"⚠️ Skipping BUY for {pair}: Projected weight {projected_w*100:.1f}% exceeds max limit ({max_allowed*100}%).")
-                            continue
+                
+                projected_ngn_cash = ngn_balance
+                min_order_threshold = 50.0  # Luno Nigeria minimum order size constraint (₦50)
 
-                    if action in ["BUY", "SELL"] and target_val > 50:
-                        current_price = prices.get(pair, 0.0)
-                        if current_price > 0:
-                            if order_executor and not paper_mode:
-                                res = order_executor.execute_market_order(pair=pair, side=action, counter_volume=str(round(target_val, 2)))
-                                st.write(f"Executed {action} for {pair}: {res['status']}")
-                            else:
-                                st.info(f"[PAPER MODE / SIMULATION] Would execute {action} on {pair} for value ₦{target_val:,.2f}.")
-                                log_audit(venue="LUNO", asset=pair, price=current_price, amount=target_val, units="SIMULATED", status=f"PAPER_{action}")
-                                
-                st.success("Autonomous rebalancing cycle completed and recorded to SQLite WAL audit logs.")
-                log_audit(venue="SYSTEM", asset="PORTFOLIO", price=0.0, amount=total_portfolio_val, units="ALL", status="REBALANCE_SUCCESS")
+                # --- PHASE 1: DIVESTMENT & CASH REALIZATION (SELLS FIRST) ---
+                st.markdown("#### **Phase 1: Divestment & NGN Treasury Sweep (Sells)**")
+                phase1_sells = {pair: d for pair, d in execution_plan.items() if d["action"] == "SELL"}
+                
+                if not phase1_sells:
+                    st.info("No overweight assets to shed in this cycle.")
+                
+                for pair, details in phase1_sells.items():
+                    target_val = details["target_adjustment_val"]
+                    current_price = prices.get(pair, 0.0)
+                    
+                    if target_val < min_order_threshold:
+                        st.warning(f"⚠️ Skipping SELL for {pair}: Order value ₦{target_val:,.2f} is below Luno minimum exchange threshold (₦{min_order_threshold:,.2f}).")
+                        continue
+
+                    if current_price > 0:
+                        if order_executor and not paper_mode:
+                            # LIVE EXECUTION: Pass target_val; order_executor computes base_volume (crypto units)
+                            res = order_executor.execute_market_order(
+                                pair=pair, 
+                                side="SELL", 
+                                target_val=target_val, 
+                                current_price=current_price
+                            )
+                            st.write(f"Executed SELL on {pair}: {res.get('status')}")
+                            if res.get('status') == 'SUCCESS':
+                                projected_ngn_cash += target_val
+                        else:
+                            st.info(f"[PAPER MODE / SIMULATION] Executed SELL on {pair} for ₦{target_val:,.2f}. Proceeds swept to NGN wallet.")
+                            log_audit(venue="LUNO", asset=pair, price=current_price, amount=target_val, units="SIMULATED", status="PAPER_SELL")
+                            projected_ngn_cash += target_val
+
+                # --- PHASE 2: ACQUISITION & REBALANCE (BUYS SECOND) ---
+                st.markdown("#### **Phase 2: Capital Deployment & Accumulation (Buys)**")
+                phase2_buys = {pair: d for pair, d in execution_plan.items() if d["action"] == "BUY"}
+                
+                if not phase2_buys:
+                    st.info("No underweight assets require accumulation in this cycle.")
+
+                for pair, details in phase2_buys.items():
+                    target_val = details["target_adjustment_val"]
+                    current_price = prices.get(pair, 0.0)
+                    
+                    projected_w = (holdings_val[pair] + target_val) / total_portfolio_val
+                    max_allowed = position_caps.get(pair, 0.40)
+                    if projected_w > max_allowed:
+                        st.warning(f"⚠️ Skipping BUY for {pair}: Projected weight {projected_w*100:.1f}% exceeds max limit ({max_allowed*100}%).")
+                        continue
+
+                    allocatable_cash = min(target_val, projected_ngn_cash * 0.90) # Reserve 10% buffer
+                    
+                    if allocatable_cash < min_order_threshold:
+                        st.warning(f"⚠️ Skipping BUY for {pair}: Insufficient NGN liquidity (Available: ₦{projected_ngn_cash:,.2f}) after Phase 1 sells.")
+                        continue
+
+                    if current_price > 0:
+                        if order_executor and not paper_mode:
+                            # LIVE EXECUTION: Pass allocatable_cash for BUY (counter_volume in NGN)
+                            res = order_executor.execute_market_order(
+                                pair=pair, 
+                                side="BUY", 
+                                target_val=allocatable_cash, 
+                                current_price=current_price
+                            )
+                            st.write(f"Executed BUY on {pair}: {res.get('status')}")
+                            if res.get('status') == 'SUCCESS':
+                                projected_ngn_cash -= allocatable_cash
+                        else:
+                            st.info(f"[PAPER MODE / SIMULATION] Executed BUY on {pair} for ₦{allocatable_cash:,.2f} funded from NGN reserve.")
+                            log_audit(venue="LUNO", asset=pair, price=current_price, amount=allocatable_cash, units="SIMULATED", status="PAPER_BUY")
+                            projected_ngn_cash -= allocatable_cash
+
+                st.success("✅ Autonomous Two-Phase Rebalancing cycle completed and recorded to SQLite WAL audit logs.")
+                log_audit(venue="SYSTEM", asset="PORTFOLIO", price=0.0, amount=total_portfolio_val, units="ALL", status="TWO_PHASE_REBALANCE_SUCCESS")
         except Exception as e:
             st.error(f"🚨 Execution Error: {str(e)}")
 
