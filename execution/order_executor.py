@@ -26,8 +26,8 @@ class InstitutionalOrderExecutor:
         """
         estimated_val = float(target_val) if target_val else 0.0
 
-        # 1. Generate Unique Order Hash for Idempotency Protection
-        raw_hash_string = f"{pair}-{side}-{estimated_val}-{datetime.now().strftime('%Y%m%d')}"
+        # 1. Generate Unique Order Hash (Updated to include hour/minute to avoid stale same-day blocks)
+        raw_hash_string = f"{pair}-{side}-{estimated_val}-{datetime.now().strftime('%Y%m%d%H%M')}"
         order_hash = hashlib.sha256(raw_hash_string.encode()).hexdigest()
 
         if check_idempotency(order_hash):
