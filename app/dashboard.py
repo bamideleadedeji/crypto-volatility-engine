@@ -1,6 +1,5 @@
 import os
 import sys
-import inspect
 
 # Ensure repository root is in sys.path for absolute modular stability
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -130,15 +129,6 @@ st.divider()
 # --- MODULE 1: PORTFOLIO & REBALANCING EXECUTION ---
 if app_mode == "Portfolio & Rebalancing Execution":
     st.subheader("Autonomous 50/30/20 Closed-Loop Rebalancing Engine")
-    
-    # Diagnostic Inspector Expander (Proves empirical module loading)
-    with st.expander("🔍 Institutional Execution Inspector (Module & Signature Audit)"):
-        if order_executor:
-            st.code(f"Loaded Module File: {inspect.getfile(type(order_executor))}")
-            st.code(f"Method Signature: {inspect.signature(order_executor.execute_market_order)}")
-        else:
-            st.warning("Order executor not initialized (Offline/Paper mode without credentials).")
-
     col_w1, col_w2, col_w3 = st.columns(3)
     col_w1.metric("BTC Target Allocation", "50%")
     col_w2.metric("ETH Target Allocation", "30%")
@@ -155,7 +145,7 @@ if app_mode == "Portfolio & Rebalancing Execution":
         }
         for pair in tickers
     ])
-    st.dataframe(breakdown_df, use_container_width=True)
+    st.dataframe(breakdown_df, width='stretch')
 
     # Evaluate current drift via AutonomousRebalancer
     evaluation = rebalancer.evaluate_rebalance(holdings_val, ngn_balance, total_portfolio_val)
@@ -192,7 +182,6 @@ if app_mode == "Portfolio & Rebalancing Execution":
 
                     if current_price > 0:
                         if order_executor and not paper_mode:
-                            # LIVE EXECUTION: Calling execute_market_order with target_val and current_price
                             res = order_executor.execute_market_order(
                                 pair=pair, 
                                 side="SELL", 
@@ -232,7 +221,6 @@ if app_mode == "Portfolio & Rebalancing Execution":
 
                     if current_price > 0:
                         if order_executor and not paper_mode:
-                            # LIVE EXECUTION: Calling execute_market_order with target_val and current_price
                             res = order_executor.execute_market_order(
                                 pair=pair, 
                                 side="BUY", 
