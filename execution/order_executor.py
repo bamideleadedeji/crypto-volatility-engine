@@ -19,12 +19,15 @@ class InstitutionalOrderExecutor:
         self.circuit_breaker = circuit_breaker
         self.daily_trades_count = 0
 
-    def execute_market_order(self, pair: str, side: str, target_val: float = 0.0, current_price: float = 0.0, volume: str = None, counter_volume: str = None, daily_pnl_pct: float = 0.0) -> dict:
+    def execute_market_order(self, pair: str, side: str, target_val: float = 0.0, current_price: float = 0.0, daily_pnl_pct: float = 0.0) -> dict:
         """
         Validates circuit breakers, checks idempotency hash, maps Luno volume parameters correctly,
         executes via Luno, and records audits and orders to SQLite WAL tables.
         """
-        estimated_val = float(target_val) if target_val > 0 else (float(volume) if volume else (float(counter_volume) if counter_volume else 0.0))
+        estimated_val = float(target_val) if target_val > 0 else 0.0
+
+        if estimated_val <= 0:
+            return {"status": "FAILED", "error": f"Invalid target value ({estimated_val}) provided for order execution."}
 
         # 1. Generate Unique Order Hash for Idempotency Protection (Keyed to seconds for clean cycle testing)
         raw_hash_string = f"{pair}-{side.upper()}-{estimated_val:.2f}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -50,11 +53,11 @@ class InstitutionalOrderExecutor:
             return {"status": "REJECTED", "reason": reason}
 
         # 3. Format Parameters for Luno API (Buys use counter_volume, Sells use base_volume)
-        resolved_volume = volume
-        resolved_counter_volume = counter_volume
+        volume = None
+        counter_volume = None
 
         if side.upper() == "BUY":
-            resolved_counter_volume = str(round(estimated_val, 2))
+            counter_volume = str(round(estimated_val, 2))
         elif side.upper() == "SELL":
             if current_price <= 0:
                 return {"status": "FAILED", "error": f"Invalid spot price ({current_price}) provided for SELL order base volume calculation."}
@@ -62,16 +65,16 @@ class InstitutionalOrderExecutor:
             # Calculate exact crypto units (base volume) from target NGN value / spot price
             crypto_units = estimated_val / current_price
             precision = 8 if "XBT" in pair or "BTC" in pair else 6
-            resolved_volume = f"{crypto_units:.{precision}f}"
+            volume = f"{crypto_units:.{precision}f}"
 
         # 4. Execute Order via Luno Connector
         try:
-            logger.info(f"Executing {side.upper()} market order for {pair} (Value: ₦{estimated_val:,.2f}, Volume Param: {resolved_volume or resolved_counter_volume})")
+            logger.info(f"Executing {side.upper()} market order for {pair} (Value: ₦{estimated_val:,.2f}, Volume Param: {volume or counter_volume})")
             response = self.connector.place_market_order(
                 pair=pair, 
                 side=side.upper(), 
-                volume=resolved_volume, 
-                counter_volume=resolved_counter_volume
+                volume=volume, 
+                counter_volume=counter_volume
             )
             
             order_id = response.get("order_id", "UNKNOWN")
@@ -91,7 +94,7 @@ class InstitutionalOrderExecutor:
                 asset=pair,
                 price=current_price,
                 amount=estimated_val,
-                units=resolved_volume or "COUNTER",
+                units=volume or "COUNTER",
                 status="SUCCESS"
             )
             
@@ -116,7 +119,7 @@ class InstitutionalOrderExecutor:
                 asset=pair,
                 price=current_price,
                 amount=estimated_val,
-                units=resolved_volume or "COUNTER",
+                units=volume or "COUNTER",
                 status="FAILED"
             )
             
