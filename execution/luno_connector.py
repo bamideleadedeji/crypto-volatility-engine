@@ -39,7 +39,7 @@ class LunoConnector(BrokerInterface):
         """
         payload = {"pair": pair, "type": side.upper()}
         if volume:
-            payload["base_volume"] = str(volume)  # Fixed: Luno expects base_volume, not volume
+            payload["base_volume"] = str(volume)
         if counter_volume:
             payload["counter_volume"] = str(counter_volume)
             
