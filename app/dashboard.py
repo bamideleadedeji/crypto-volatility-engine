@@ -1,5 +1,6 @@
 import os
 import sys
+import inspect
 
 # Ensure repository root is in sys.path for absolute modular stability
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -129,6 +130,15 @@ st.divider()
 # --- MODULE 1: PORTFOLIO & REBALANCING EXECUTION ---
 if app_mode == "Portfolio & Rebalancing Execution":
     st.subheader("Autonomous 50/30/20 Closed-Loop Rebalancing Engine")
+    
+    # Diagnostic Inspector Expander (Proves empirical module loading)
+    with st.expander("🔍 Institutional Execution Inspector (Module & Signature Audit)"):
+        if order_executor:
+            st.code(f"Loaded Module File: {inspect.getfile(type(order_executor))}")
+            st.code(f"Method Signature: {inspect.signature(order_executor.execute_market_order)}")
+        else:
+            st.warning("Order executor not initialized (Offline/Paper mode without credentials).")
+
     col_w1, col_w2, col_w3 = st.columns(3)
     col_w1.metric("BTC Target Allocation", "50%")
     col_w2.metric("ETH Target Allocation", "30%")
@@ -152,7 +162,7 @@ if app_mode == "Portfolio & Rebalancing Execution":
     
     st.info(f"📊 **Portfolio Max Drift:** {evaluation.get('max_drift_percentage', 0.0)}% (Threshold: 3.0%)")
 
-    if st.button("🚀 Execute Autonomous Closed-Loop Rebalance", use_container_width=True):
+    if st.button("🚀 Execute Autonomous Closed-Loop Rebalance", width='stretch'):
         try:
             if not evaluation["rebalance_triggered"]:
                 st.info("⏸️ Rebalance skipped: Portfolio drift is within the 3% tolerance threshold. No action required.")
@@ -182,7 +192,7 @@ if app_mode == "Portfolio & Rebalancing Execution":
 
                     if current_price > 0:
                         if order_executor and not paper_mode:
-                            # LIVE EXECUTION: Pass target_val; order_executor computes base_volume (crypto units)
+                            # LIVE EXECUTION: Calling execute_market_order with target_val and current_price
                             res = order_executor.execute_market_order(
                                 pair=pair, 
                                 side="SELL", 
@@ -222,7 +232,7 @@ if app_mode == "Portfolio & Rebalancing Execution":
 
                     if current_price > 0:
                         if order_executor and not paper_mode:
-                            # LIVE EXECUTION: Pass allocatable_cash for BUY (counter_volume in NGN)
+                            # LIVE EXECUTION: Calling execute_market_order with target_val and current_price
                             res = order_executor.execute_market_order(
                                 pair=pair, 
                                 side="BUY", 
@@ -254,7 +264,7 @@ elif app_mode == "GARCH Volatility & VaR Suite":
     with col_opt3:
         var_horizon = st.number_input("VaR Horizon (Days)", min_value=1, max_value=30, value=1)
 
-    if st.button("📈 Run Econometric Estimation & Covariance Shrinkage", use_container_width=True):
+    if st.button("📈 Run Econometric Estimation & Covariance Shrinkage", width='stretch'):
         with st.spinner("Fitting GARCH models with Student-t innovations & calculating Ledoit-Wolf shrinkage..."):
             np.random.seed(42)
             dates = pd.date_range(end=pd.Timestamp.today(), periods=lookback_window, freq="D")
@@ -278,10 +288,10 @@ elif app_mode == "GARCH Volatility & VaR Suite":
             st.success("✅ Econometric pipeline successfully computed.")
 
             st.markdown("### 📊 Portfolio Value at Risk (VaR) & Expected Shortfall (CVaR)")
-            st.dataframe(pd.DataFrame(risk_metrics).T, use_container_width=True)
+            st.dataframe(pd.DataFrame(risk_metrics).T, width='stretch')
 
             st.markdown("### 🧮 Ledoit-Wolf Shrinkage Covariance Matrix")
-            st.dataframe(cov_matrix, use_container_width=True)
+            st.dataframe(cov_matrix, width='stretch')
 
             asset_to_fit = st.selectbox("Inspect Asset Conditional Volatility", tickers)
             garch_result = quant_engine.fit_optimized_garch(returns_df[asset_to_fit], model_type=selected_model)
@@ -293,7 +303,7 @@ elif app_mode == "GARCH Volatility & VaR Suite":
             fig_vol.add_trace(go.Scatter(x=dates, y=returns_df[asset_to_fit], mode='lines', name='Log Returns', line=dict(color='gray', width=1)))
             fig_vol.add_trace(go.Scatter(x=dates, y=garch_result['conditional_volatility'], mode='lines', name=f'{selected_model} Volatility', line=dict(color='cyan', width=2)))
             fig_vol.update_layout(title=f"{asset_to_fit} — {selected_model} Volatility Dynamics (Student-t Innovations)", template="plotly_dark")
-            st.plotly_chart(fig_vol, use_container_width=True)
+            st.plotly_chart(fig_vol, width='stretch')
 
 # --- MODULE 3: BACKTEST SIMULATION ENGINE ---
 elif app_mode == "Backtest Simulation Engine":
@@ -302,7 +312,7 @@ elif app_mode == "Backtest Simulation Engine":
 
     bt_days = st.slider("Backtest Historical Period (Days)", min_value=30, max_value=365, value=180)
 
-    if st.button("🚀 Run Backtest Simulation", use_container_width=True):
+    if st.button("🚀 Run Backtest Simulation", width='stretch'):
         with st.spinner("Running historical backtest simulation..."):
             np.random.seed(100)
             bt_dates = pd.date_range(end=pd.Timestamp.today(), periods=bt_days, freq="D")
@@ -343,7 +353,7 @@ elif app_mode == "Market Regime & Attribution":
     st.divider()
     st.markdown("### 📊 Monthly Performance Attribution Audit (Section 19)")
     
-    if st.button("Generate Monthly Attribution Report", use_container_width=True):
+    if st.button("Generate Monthly Attribution Report", width='stretch'):
         dummy_returns = {"XBTNGN": 0.08, "ETHNGN": 0.05, "SOLNGN": -0.02}
         report = attribution_engine.compute_monthly_attribution(
             portfolio_start_val=10_000_000.0,
@@ -360,6 +370,6 @@ elif app_mode == "SQLite Audit Ledger":
     st.subheader("📜 SQLite WAL Audit Ledger & Event History")
     audit_df = fetch_audit_ledger(100)
     if not audit_df.empty:
-        st.dataframe(audit_df, use_container_width=True)
+        st.dataframe(audit_df, width='stretch')
     else:
         st.info("No audit logs recorded in SQLite WAL database yet. Execute a rebalance or trigger simulation events to populate the ledger.")
