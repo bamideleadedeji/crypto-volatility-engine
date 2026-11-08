@@ -7,19 +7,20 @@ logger = logging.getLogger("AutonomousRebalancer")
 class AutonomousRebalancer:
     """
     Enforces disciplined 50/30/20 portfolio rebalancing without emotional bias.
-    Applies the 3% drift rule, directional constraints, and automated NGN treasury cash sweeps.
+    Applies the 3% drift rule, directional constraints, and a two-phase self-funding 
+    treasury cash rotation (Sells generate liquidity, Buys consume liquidity).
     """
 
     def __init__(self, target_weights: dict = None, drift_threshold: float = 0.03, min_cash_reserve_pct: float = 0.10, fee_rate: float = 0.001):
         self.target_weights = target_weights or {"XBTNGN": 0.50, "ETHNGN": 0.30, "SOLNGN": 0.20}
-        self.drift_threshold = drift_threshold        # 3% drift tolerance
+        self.drift_threshold = drift_threshold          # 3% drift tolerance
         self.min_cash_reserve_pct = min_cash_reserve_pct # Minimum 10% NGN reserve
-        self.fee_rate = fee_rate                      # Exchange fee simulation
+        self.fee_rate = fee_rate                        # Exchange fee simulation
 
     def evaluate_rebalance(self, holdings_val: dict, ngn_balance: float, total_portfolio_value: float) -> dict:
         """
-        Evaluates portfolio drift, computes required buy/sell orders, 
-        and enforces institutional rebalancing rules and treasury cash sweeps.
+        Evaluates portfolio drift, structures a two-phase execution plan (Sells first, 
+        then Buys), and enforces institutional rebalancing rules and self-funding treasury sweeps.
         """
         if total_portfolio_value <= 0:
             return {"status": "ERROR", "reason": "Zero or negative portfolio valuation."}
@@ -27,7 +28,9 @@ class AutonomousRebalancer:
         current_weights = {pair: val / total_portfolio_value for pair, val in holdings_val.items()}
         current_cash_pct = ngn_balance / total_portfolio_value
         
-        actions = {}
+        sell_actions = {}
+        buy_actions = {}
+        hold_actions = {}
         max_drift = 0.0
         rebalance_required = False
         treasury_sweep_action = None
@@ -42,6 +45,7 @@ class AutonomousRebalancer:
             }
             rebalance_required = True
 
+        # First Pass: Classify Sells and Buys separately for strict two-phase sequencing
         for pair, target in self.target_weights.items():
             current = current_weights.get(pair, 0.0)
             drift = current - target
@@ -51,45 +55,53 @@ class AutonomousRebalancer:
             target_asset_val = total_portfolio_value * target
             diff_val = target_asset_val - current_asset_val
 
-            # Enforce Rebalancing Rules:
-            # - Do nothing if drift < 3% and cash reserve is healthy
-            # - Sell only overweight assets (diff_val < 0) -> Proceeds sweep to NGN wallet
-            # - Buy only underweight assets (diff_val > 0) -> Funded by NGN reserve
             if abs(drift) >= self.drift_threshold or treasury_sweep_action is not None:
                 rebalance_required = True
                 if diff_val < 0:
-                    # Overweight -> Sell excess and sweep proceeds to NGN reserve
+                    # Overweight -> Phase 1 SELL (Generates NGN cash)
                     excess_val = abs(diff_val)
-                    actions[pair] = {
-                        "action": "SELL",
-                        "target_adjustment_val": excess_val,
-                        "estimated_fee": excess_val * self.fee_rate,
-                        "treasury_effect": "PROCEEDS_SWAPTED_TO_NGN_WALLET",
-                        "reason": f"Drift {drift*100:.2f}% exceeds threshold. Selling excess to recapitalize NGN."
-                    }
-                elif diff_val > 0:
-                    # Underweight -> Buy deficit (subject to available NGN cash reserve)
-                    allocatable_cash = min(diff_val, ngn_balance * (1.0 - self.min_cash_reserve_pct))
-                    if allocatable_cash > 50: # Minimum order threshold ₦50
-                        actions[pair] = {
-                            "action": "BUY",
-                            "target_adjustment_val": allocatable_cash,
-                            "estimated_fee": allocatable_cash * self.fee_rate,
-                            "treasury_effect": "FUNDED_FROM_NGN_RESERVE",
-                            "reason": f"Drift {drift*100:.2f}% requires accumulation."
+                    if excess_val > 50: # Minimum order threshold ₦50
+                        sell_actions[pair] = {
+                            "action": "SELL",
+                            "phase": 1,
+                            "target_adjustment_val": excess_val,
+                            "estimated_fee": excess_val * self.fee_rate,
+                            "treasury_effect": "PROCEEDS_SWAPTED_TO_NGN_WALLET",
+                            "reason": f"Drift {drift*100:.2f}% exceeds threshold. Selling excess to recapitalize NGN."
                         }
                     else:
-                        actions[pair] = {
-                            "action": "HOLD", 
-                            "target_adjustment_val": 0.0, 
-                            "reason": "Underweight, but restricted by minimum NGN cash reserve buffer."
+                        hold_actions[pair] = {
+                            "action": "HOLD",
+                            "phase": 0,
+                            "target_adjustment_val": 0.0,
+                            "reason": "Overweight drift, but below minimum order size threshold."
                         }
+                elif diff_val > 0:
+                    # Underweight -> Phase 2 BUY (Funded by NGN reserve + projected sell proceeds)
+                    buy_actions[pair] = {
+                        "action": "BUY",
+                        "phase": 2,
+                        "target_adjustment_val": diff_val,
+                        "estimated_fee": diff_val * self.fee_rate,
+                        "treasury_effect": "FUNDED_FROM_SELF_FUNDING_POOL",
+                        "reason": f"Drift {drift*100:.2f}% requires accumulation."
+                    }
             else:
-                actions[pair] = {
-                    "action": "HOLD", 
-                    "target_adjustment_val": 0.0, 
+                hold_actions[pair] = {
+                    "action": "HOLD",
+                    "phase": 0,
+                    "target_adjustment_val": 0.0,
                     "reason": "Drift within 3% tolerance."
                 }
+
+        # Combine into a strictly ordered execution plan: Sells first, then Buys, then Holds
+        execution_plan = {}
+        for p, d in sell_actions.items():
+            execution_plan[p] = d
+        for p, d in buy_actions.items():
+            execution_plan[p] = d
+        for p, d in hold_actions.items():
+            execution_plan[p] = d
 
         return {
             "status": "SUCCESS",
@@ -99,5 +111,5 @@ class AutonomousRebalancer:
             "treasury_sweep": treasury_sweep_action,
             "current_weights": {k: round(v * 100, 2) for k, v in current_weights.items()},
             "target_weights": {k: round(v * 100, 2) for k, v in self.target_weights.items()},
-            "execution_plan": actions
+            "execution_plan": execution_plan
         }
