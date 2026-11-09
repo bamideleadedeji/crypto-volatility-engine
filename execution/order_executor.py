@@ -24,7 +24,6 @@ class InstitutionalOrderExecutor:
         Validates circuit breakers, checks idempotency hash, maps Luno volume parameters correctly,
         executes via Luno, and records audits and orders to SQLite WAL tables.
         """
-        # Comprehensive fallback normalization across all possible calling conventions
         resolved_val = target_val or amount or 0.0
         if resolved_val <= 0:
             if volume and current_price > 0:
