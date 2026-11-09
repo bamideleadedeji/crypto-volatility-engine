@@ -257,14 +257,17 @@ if app_mode == "Portfolio & Rebalancing Execution":
 
                     if current_price > 0:
                         if order_executor and not paper_mode:
-                            res = safe_execute_market_order(order_executor, pair, "SELL", target_val, current_price)
+                            # Apply 0.5% dust safety margin to prevent ErrInsufficientBalance rejections
+                            safe_target_val = target_val * 0.995
+                            
+                            res = safe_execute_market_order(order_executor, pair, "SELL", safe_target_val, current_price)
                             st.write(f"Executed SELL on {pair}: {res.get('status')}")
                             if res.get("status") == "SUCCESS":
-                                projected_ngn_cash += target_val
+                                projected_ngn_cash += safe_target_val
                             else:
                                 err_msg = res.get('error', 'Unknown error')
                                 st.warning(f"⚠️ SELL {pair} exchange note ({err_msg}). Proceeding with liquidity sweep.")
-                                log_audit(venue="LUNO", asset=pair, price=current_price, amount=target_val, units="FAILED_SELL", status="EXCHANGE_WARNING")
+                                log_audit(venue="LUNO", asset=pair, price=current_price, amount=safe_target_val, units="FAILED_SELL", status="EXCHANGE_WARNING")
                         else:
                             st.info(f"[PAPER MODE / SIMULATION] Executed SELL on {pair} for ₦{target_val:,.2f}. Proceeds swept to NGN wallet.")
                             log_audit(venue="LUNO", asset=pair, price=current_price, amount=target_val, units="SIMULATED", status="PAPER_SELL")
