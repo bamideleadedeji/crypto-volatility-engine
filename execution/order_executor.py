@@ -72,7 +72,9 @@ class InstitutionalOrderExecutor:
             if current_price <= 0:
                 return {"status": "FAILED", "error": f"Invalid spot price ({current_price}) provided for SELL order base volume calculation."}
             
-            crypto_units = estimated_val / current_price
+            # Apply automatic fee/dust haircut (2%) to prevent ErrInsufficientBalance rejections on fractional balances
+            adjusted_val = estimated_val * 0.98
+            crypto_units = adjusted_val / current_price
             precision = 8 if "XBT" in pair or "BTC" in pair else 6
             resolved_volume = f"{crypto_units:.{precision}f}"
             resolved_counter_volume = None
@@ -117,6 +119,7 @@ class InstitutionalOrderExecutor:
             
             record_order(
                 order_hash=order_hash,
+                order_id="FAILED",
                 order_id="FAILED",
                 asset=pair,
                 side=side.upper(),
