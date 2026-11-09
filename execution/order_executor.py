@@ -11,7 +11,7 @@ class InstitutionalOrderExecutor:
     """
     Executes trades on Luno with integrated circuit breaker validation, 
     idempotency hash checks, mandatory SQLite WAL audit logging, and 
-    strict parameter mapping.
+    strict parameter mapping. Fully compatible with target_val, volume, and counter_volume.
     """
 
     def __init__(self, connector: LunoConnector, circuit_breaker: CircuitBreakerManager):
@@ -19,21 +19,22 @@ class InstitutionalOrderExecutor:
         self.circuit_breaker = circuit_breaker
         self.daily_trades_count = 0
 
-    def execute_market_order(self, pair: str, side: str, target_val: float = 0.0, current_price: float = 0.0, daily_pnl_pct: float = 0.0, volume: str = None, counter_volume: str = None, **kwargs) -> dict:
+    def execute_market_order(self, pair: str, side: str, target_val: float = 0.0, current_price: float = 0.0, daily_pnl_pct: float = 0.0, volume: str = None, counter_volume: str = None, amount: float = None, quantity: float = None, **kwargs) -> dict:
         """
         Validates circuit breakers, checks idempotency hash, maps Luno volume parameters correctly,
         executes via Luno, and records audits and orders to SQLite WAL tables.
         """
-        # Handle fallback if target_val is passed via kwargs or legacy args
-        if target_val <= 0:
-            if "target_val" in kwargs:
-                target_val = float(kwargs["target_val"])
-            elif volume and current_price > 0:
-                target_val = float(volume) * current_price
+        # Comprehensive fallback normalization across all possible calling conventions
+        resolved_val = target_val or amount or 0.0
+        if resolved_val <= 0:
+            if volume and current_price > 0:
+                resolved_val = float(volume) * current_price
             elif counter_volume:
-                target_val = float(counter_volume)
+                resolved_val = float(counter_volume)
+            elif quantity and current_price > 0:
+                resolved_val = float(quantity) * current_price
 
-        estimated_val = float(target_val) if target_val > 0 else 0.0
+        estimated_val = float(resolved_val) if resolved_val > 0 else 0.0
 
         if estimated_val <= 0:
             return {"status": "FAILED", "error": f"Invalid order value ({estimated_val}) provided for execution."}
