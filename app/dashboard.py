@@ -175,7 +175,6 @@ total_crypto_val = sum(holdings_val.values())
 total_portfolio_val = ngn_balance + total_crypto_val
 
 # Sidebar Navigation & Controls
-st.sidebar.header("🕹️ ICIE Control Panel")
 app_mode = st.sidebar.radio(
     "Select Engine Module",
     [
@@ -252,29 +251,27 @@ if app_mode == "Portfolio & Rebalancing Execution":
                     current_price = float(prices.get(pair, 0.0))
                     asset_holding_val = holdings_val.get(pair, 0.0)
 
-                    # Guard against selling more than actually owned or falling below minimum threshold
                     if target_val < min_order_threshold:
                         st.warning(f"⚠️ Skipping SELL for {pair}: Order value ₦{target_val:,.2f} is below Luno minimum exchange threshold (₦50).")
                         continue
 
-                    if target_val > asset_holding_val:
-                        target_val = asset_holding_val * 0.99
+                    max_tradable_sell = asset_holding_val * 0.95
+                    if target_val > max_tradable_sell:
+                        target_val = max_tradable_sell
                         if target_val < min_order_threshold:
-                            st.warning(f"⚠️ Skipping SELL for {pair}: Available holding value (₦{asset_holding_val:,.2f}) is too small after dust adjustment.")
+                            st.warning(f"⚠️ Skipping SELL for {pair}: Tradable balance too small after safety margin.")
                             continue
 
                     if current_price > 0:
                         if order_executor and not paper_mode:
-                            safe_target_val = target_val * 0.99
-                            
-                            res = safe_execute_market_order(order_executor, pair, "SELL", safe_target_val, current_price)
+                            res = safe_execute_market_order(order_executor, pair, "SELL", target_val, current_price)
                             st.write(f"Executed SELL on {pair}: {res.get('status')}")
                             if res.get("status") == "SUCCESS":
-                                projected_ngn_cash += safe_target_val
+                                projected_ngn_cash += target_val
                             else:
                                 err_msg = res.get('error', 'Unknown error')
-                                st.warning(f"⚠️ SELL {pair} exchange note ({err_msg}). Asset balance may be dust.")
-                                log_audit(venue="LUNO", asset=pair, price=current_price, amount=safe_target_val, units="DUST_SKIP", status="EXCHANGE_WARNING")
+                                st.warning(f"⚠️ SELL {pair} exchange note ({err_msg}). Asset balance treated as dust.")
+                                log_audit(venue="LUNO", asset=pair, price=current_price, amount=target_val, units="DUST_SKIP", status="EXCHANGE_WARNING")
                         else:
                             st.info(f"[PAPER MODE / SIMULATION] Executed SELL on {pair} for ₦{target_val:,.2f}. Proceeds swept to NGN wallet.")
                             log_audit(venue="LUNO", asset=pair, price=current_price, amount=target_val, units="SIMULATED", status="PAPER_SELL")
