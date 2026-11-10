@@ -21,8 +21,8 @@ class InstitutionalOrderExecutor:
 
     def execute_market_order(self, pair: str, side: str, target_val: float = 0.0, current_price: float = 0.0, daily_pnl_pct: float = 0.0, volume: str = None, counter_volume: str = None, amount: float = None, quantity: float = None, **kwargs) -> dict:
         """
-        Validates circuit breakers, checks idempotency hash, maps Luno volume parameters correctly,
-        executes via Luno, and records audits and orders to SQLite WAL tables.
+        Validates circuit breakers, checks idempotency hash, enforces exchange minimums,
+        maps Luno volume parameters correctly, executes via Luno, and records audits to SQLite WAL.
         """
         resolved_val = target_val or amount or 0.0
         if resolved_val <= 0:
@@ -35,8 +35,13 @@ class InstitutionalOrderExecutor:
 
         estimated_val = float(resolved_val) if resolved_val > 0 else 0.0
 
-        if estimated_val <= 0:
-            return {"status": "FAILED", "error": f"Invalid order value ({estimated_val}) provided for execution."}
+        # Enforce ICIE Blueprint Rule 15: Minimum Order of ₦50
+        MIN_ORDER_NGN = 50.0
+        if estimated_val < MIN_ORDER_NGN:
+            error_msg = f"Order value (₦{estimated_val:,.2f}) is below the strict minimum order threshold of ₦{MIN_ORDER_NGN}."
+            logger.warning(error_msg)
+            log_audit(venue="LUNO", asset=pair, price=current_price, amount=estimated_val, units="SKIPPED", status="BELOW_MIN_LIMIT")
+            return {"status": "SKIPPED", "reason": error_msg}
 
         # 1. Generate Unique Order Hash for Idempotency Protection
         raw_hash_string = f"{pair}-{side.upper()}-{estimated_val:.2f}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -61,9 +66,17 @@ class InstitutionalOrderExecutor:
             log_audit(venue="LUNO", asset=pair, price=current_price, amount=estimated_val, units="REJECTED", status="REJECTED")
             return {"status": "REJECTED", "reason": reason}
 
-        # 3. Format Parameters for Luno API (Buys use counter_volume, Sells use base_volume)
+        # 3. Format Parameters for Luno API with Exchange Base Volume Compliance
         resolved_volume = volume
         resolved_counter_volume = counter_volume
+
+        # Luno Exchange Minimum Base Volume Limits
+        min_base_volumes = {
+            "BTCNGN": 0.0005,
+            "ETHNGN": 0.005,
+            "SOLNGN": 0.05
+        }
+        min_vol_limit = min_base_volumes.get(pair, 0.001)
 
         if side.upper() == "BUY":
             resolved_counter_volume = str(round(estimated_val, 2))
@@ -72,9 +85,16 @@ class InstitutionalOrderExecutor:
             if current_price <= 0:
                 return {"status": "FAILED", "error": f"Invalid spot price ({current_price}) provided for SELL order base volume calculation."}
             
-            # Apply automatic fee/dust haircut (2%) to prevent ErrInsufficientBalance rejections on fractional balances
+            # Apply fee haircut while validating against exchange base volume limits
             adjusted_val = estimated_val * 0.98
             crypto_units = adjusted_val / current_price
+            
+            if crypto_units < min_vol_limit:
+                error_msg = f"Calculated sell volume ({crypto_units:.6f}) for {pair} is below Luno minimum base volume ({min_vol_limit})."
+                logger.warning(error_msg)
+                log_audit(venue="LUNO", asset=pair, price=current_price, amount=estimated_val, units="SKIPPED", status="BELOW_BASE_VOLUME")
+                return {"status": "SKIPPED", "reason": error_msg}
+
             precision = 8 if "XBT" in pair or "BTC" in pair else 6
             resolved_volume = f"{crypto_units:.{precision}f}"
             resolved_counter_volume = None
@@ -117,7 +137,6 @@ class InstitutionalOrderExecutor:
             error_msg = str(e)
             logger.error(f"Order execution failed: {error_msg}")
             
-            # Duplicate keyword argument removed here:
             record_order(
                 order_hash=order_hash,
                 order_id="FAILED",
