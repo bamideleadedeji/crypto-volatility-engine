@@ -2,7 +2,7 @@ name: ICIE Autonomous Background Runner
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # Runs every 6 hours (adjust frequency as needed)
+    - cron: '0 */6 * * *'  # Runs every 6 hours
   workflow_dispatch:        # Enables manual trigger from the GitHub Actions tab
 
 jobs:
