@@ -117,9 +117,9 @@ class InstitutionalOrderExecutor:
             error_msg = str(e)
             logger.error(f"Order execution failed: {error_msg}")
             
+            # Duplicate keyword argument removed here:
             record_order(
                 order_hash=order_hash,
-                order_id="FAILED",
                 order_id="FAILED",
                 asset=pair,
                 side=side.upper(),
