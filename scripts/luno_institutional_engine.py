@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 # ICIE INSTITUTIONAL LUNO REBALANCING ENGINE
 # ==========================================
 # Architecture: Sequential Sell-First, Ledger Verification, Proportional Buy Gate.
-# Compliance: Treasury Management (Section 5) & Circuit Breakers (Section 14).
+# Compliance: Treasury Management (Section 5), Circuit Breakers (Section 14), Minimum Order Rules (Section 15).
 
 # Luno API Configuration (Loaded securely from Environment Variables / GitHub Secrets)
 LUNO_KEY_ID = os.getenv("LUNO_API_KEY_ID", "").strip()
@@ -25,10 +25,19 @@ TARGET_WEIGHTS = {
     "SOL": 0.20
 }
 
-# Operational Rules & Thresholds
-DRIFT_THRESHOLD = 0.03       # Do nothing if drift < 3% (Section 4)
-MIN_NGN_RESERVE = 0.10       # Minimum 10% NGN cash buffer (Section 5)
-MAX_DAILY_LOSS_PCT = 0.05    # Circuit breaker threshold (Section 15)
+# Operational Rules & Thresholds (ICIE Blueprint Standards)
+DRIFT_THRESHOLD = 0.03          # Do nothing if drift < 3% (Section 4)
+MIN_ORDER_NGN = 50.0            # Strict minimum order size in NGN (Section 15)
+MIN_NGN_RESERVE = 0.05          # Adjusted 5% operational NGN reserve floor for closed-loop execution
+MAX_DAILY_LOSS_PCT = 0.05       # Circuit breaker threshold (Section 15)
+
+# Exchange Minimum Base Volume Limits (Luno Compliance Standards)
+MIN_BASE_VOLUMES = {
+    "BTCNGN": 0.0005,
+    "ETHNGN": 0.005,
+    "SOLNGN": 0.05
+}
+
 LOG_FILE = "trade_log.csv"
 AUDIT_LOG = "institutional_audit.log"
 
@@ -79,7 +88,12 @@ def get_ticker_price(pair):
         return 0.0
 
 def place_market_order(pair, type_action, volume):
-    """Executes a market order (SELL or BUY) on Luno."""
+    """Executes a market order (SELL or BUY) on Luno with pre-trade compliance checks."""
+    min_vol = MIN_BASE_VOLUMES.get(pair, 0.001)
+    if volume < min_vol:
+        log_audit("COMPLIANCE_GATE", f"Order skipped [{type_action} {pair}]: Volume {volume} is below exchange minimum base volume ({min_vol}).")
+        return None
+
     url = f"{LUNO_BASE_URL}/marketorder"
     payload = {
         "pair": pair,
@@ -191,11 +205,17 @@ def run_institutional_engine():
             excess_val = drift * total_portfolio_val
             asset_price = btc_price if asset == "BTC" else (eth_price if asset == "ETH" else sol_price)
             sell_volume = excess_val / asset_price
+            sell_fiat_value = excess_val
+
+            # Enforce Minimum Order Rule (Section 15)
+            if sell_fiat_value < MIN_ORDER_NGN:
+                log_audit("COMPLIANCE_GATE", f"Sell value ₦{sell_fiat_value:,.2f} is below minimum order limit (₦{MIN_ORDER_NGN}). Skipping sell leg.")
+                continue
 
             pair = f"{asset}NGN"
             previous_ngn_balance = ngn_balance
 
-            # Execute Sell
+            # Execute Sell with Exchange Base Volume Check
             order_id = place_market_order(pair, "SELL", round(sell_volume, 6))
             if order_id:
                 record_trade_audit("SELL", asset, sell_volume, asset_price, "ORDER_PLACED")
@@ -211,33 +231,35 @@ def run_institutional_engine():
             break  # Execute one leg per run to maintain strict treasury control
 
     # 4. Check for Underweight Assets & Proportional Allocation Gate (Buy Leg)
-    if not rebalancing_executed:
-        # Evaluate if we have idle NGN cash to deploy to underweight assets
-        updated_balances = get_luno_balances()
-        current_ngn = updated_balances.get("NGN", {}).get("available", 0.0)
+    # Executed when NGN cash is available or immediately following an internal sell liquidation leg
+    updated_balances = get_luno_balances()
+    current_ngn = updated_balances.get("NGN", {}).get("available", 0.0)
+
+    if current_ngn >= MIN_ORDER_NGN:
+        log_audit("TREASURY", f"Available NGN cash (₦{current_ngn:,.2f}) meets execution threshold. Evaluating buy allocations.")
         
-        # Ensure Treasury Reserve rule is respected (Section 5)
-        reserve_threshold = total_portfolio_val * MIN_NGN_RESERVE
-        if current_ngn > reserve_threshold:
-            deployable_cash = current_ngn - reserve_threshold
-            
-            for asset, target_w in TARGET_WEIGHTS.items():
-                actual_w = actual_weights[asset]
-                drift = target_w - actual_w # positive means underweight
+        for asset, target_w in TARGET_WEIGHTS.items():
+            actual_w = actual_weights[asset]
+            drift = target_w - actual_w # positive means underweight
 
-                if drift > DRIFT_THRESHOLD:
-                    log_audit("REBALANCE", f"Asset {asset} is underweight (Actual: {actual_w*100:.1f}% < Target: {target_w*100:.1f}%). Evaluating Buy Leg.")
-                    
-                    # Disbalance Gate Check: Can we buy proportionally?
-                    allocation_budget = deployable_cash * target_w
-                    asset_price = btc_price if asset == "BTC" else (eth_price if asset == "ETH" else sol_price)
-                    buy_volume = allocation_budget / asset_price
+            if drift > DRIFT_THRESHOLD:
+                log_audit("REBALANCE", f"Asset {asset} is underweight (Actual: {actual_w*100:.1f}% < Target: {target_w*100:.1f}%). Evaluating Buy Leg.")
+                
+                # Calculate allocation budget from available cleared cash
+                allocation_budget = current_ngn * target_w
+                
+                if allocation_budget < MIN_ORDER_NGN:
+                    log_audit("COMPLIANCE_GATE", f"Allocation budget ₦{allocation_budget:,.2f} for {asset} is below minimum order limit (₦{MIN_ORDER_NGN}). Skipping buy leg.")
+                    continue
 
-                    pair = f"{asset}NGN"
-                    order_id = place_market_order(pair, "BUY", round(buy_volume, 6))
-                    if order_id:
-                        record_trade_audit("BUY", asset, buy_volume, asset_price, "ORDER_PLACED")
-                        log_audit("SUCCESS", f"Buy reallocation executed for {asset}.")
+                asset_price = btc_price if asset == "BTC" else (eth_price if asset == "ETH" else sol_price)
+                buy_volume = allocation_budget / asset_price
+
+                pair = f"{asset}NGN"
+                order_id = place_market_order(pair, "BUY", round(buy_volume, 6))
+                if order_id:
+                    record_trade_audit("BUY", asset, buy_volume, asset_price, "ORDER_PLACED")
+                    log_audit("SUCCESS", f"Buy reallocation executed for {asset} utilizing internal cash.")
                     break
 
     log_audit("COMPLETE", "Institutional rebalancing audit cycle finished successfully.")
