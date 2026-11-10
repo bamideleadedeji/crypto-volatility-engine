@@ -155,7 +155,6 @@ def run_institutional_engine():
                     update_paper_portfolio(ngn_balance, holdings_units)
 
     # 5. Proportional Redistribution: Use Internal NGN Liquidity for Underweight Assets (Buy Leg)
-    # Refresh NGN balance after internal liquidations
     for pair in tickers:
         current_w = curr_weights_pct.get(pair, 0.0)
         target_w = target_weights.get(pair, 0.0) * 100
