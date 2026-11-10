@@ -1,8 +1,14 @@
 import os
+import sys
 import time
 import logging
 import pandas as pd
 from datetime import datetime
+
+# Ensure repository root is in sys.path for robust absolute execution in GitHub Actions & cron
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
 
 from core.config import load_config
 from core.logging import setup_logger
@@ -58,10 +64,10 @@ def run_institutional_engine():
     prices = {}
     for pair in tickers:
         try:
-            if connector:
+            if connector and not paper_mode:
                 prices[pair] = connector.fetch_ticker(pair)
             else:
-                # Simulated live baseline prices if offline
+                # Simulated live baseline prices if offline / paper mode
                 prices["XBTNGN"] = 101425618.0
                 prices["ETHNGN"] = 2780346.0
                 prices["SOLNGN"] = 220000.0
@@ -111,6 +117,7 @@ def run_institutional_engine():
     
     if not evaluation.get("rebalance_triggered", False):
         logger.info(f"[REBALANCE] Portfolio drift ({evaluation.get('max_drift_percentage', 0.0)}%) is within the 3.0% tolerance threshold. No action required.")
+        logger.info("[COMPLETE] Institutional rebalancing audit cycle finished successfully.")
         return
 
     logger.info(f"✅ Drift exceeds threshold ({evaluation.get('max_drift_percentage', 0.0)}%). Executing Closed-Loop Rebalance Sequence.")
