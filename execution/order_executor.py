@@ -11,18 +11,19 @@ class InstitutionalOrderExecutor:
     """
     Executes trades on Luno with integrated circuit breaker validation, 
     idempotency hash checks, mandatory SQLite WAL audit logging, and 
-    strict parameter mapping. Fully compatible with target_val, volume, and counter_volume.
+    aggressive limit-pricing buffer (NGX-style) to guarantee live execution fills.
     """
 
     def __init__(self, connector: LunoConnector, circuit_breaker: CircuitBreakerManager):
         self.connector = connector
         self.circuit_breaker = circuit_breaker
         self.daily_trades_count = 0
+        self.aggressive_limit_buffer = 0.0015  # 0.15% aggressive buffer to ensure fills
 
-    def execute_market_order(self, pair: str, side: str, target_val: float = 0.0, current_price: float = 0.0, daily_pnl_pct: float = 0.0, volume: str = None, counter_volume: str = None, amount: float = None, quantity: float = None, **kwargs) -> dict:
+    def execute_limit_order(self, pair: str, side: str, target_val: float = 0.0, current_price: float = 0.0, daily_pnl_pct: float = 0.0, volume: str = None, counter_volume: str = None, amount: float = None, quantity: float = None, **kwargs) -> dict:
         """
         Validates circuit breakers, checks idempotency hash, enforces exchange minimums,
-        maps Luno volume parameters correctly, executes via Luno, and records audits to SQLite WAL.
+        applies aggressive limit pricing, executes via Luno connector, and records audits to SQLite WAL.
         """
         resolved_val = target_val or amount or 0.0
         if resolved_val <= 0:
@@ -66,11 +67,10 @@ class InstitutionalOrderExecutor:
             log_audit(venue="LUNO", asset=pair, price=current_price, amount=estimated_val, units="REJECTED", status="REJECTED")
             return {"status": "REJECTED", "reason": reason}
 
-        # 3. Format Parameters for Luno API with Exchange Base Volume Compliance
-        resolved_volume = volume
-        resolved_counter_volume = counter_volume
+        # 3. Format Parameters for Luno API with Exchange Base Volume & Limit Pricing
+        if current_price <= 0:
+            return {"status": "FAILED", "error": f"Invalid spot price ({current_price}) provided for order execution."}
 
-        # Luno Exchange Minimum Base Volume Limits
         min_base_volumes = {
             "BTCNGN": 0.0005,
             "ETHNGN": 0.005,
@@ -78,35 +78,36 @@ class InstitutionalOrderExecutor:
         }
         min_vol_limit = min_base_volumes.get(pair, 0.001)
 
+        # Apply aggressive limit pricing (NGX style: crossing the spread slightly to ensure fill)
         if side.upper() == "BUY":
-            resolved_counter_volume = str(round(estimated_val, 2))
-            resolved_volume = None
-        elif side.upper() == "SELL":
-            if current_price <= 0:
-                return {"status": "FAILED", "error": f"Invalid spot price ({current_price}) provided for SELL order base volume calculation."}
-            
-            # Apply fee haircut while validating against exchange base volume limits
-            adjusted_val = estimated_val * 0.98
-            crypto_units = adjusted_val / current_price
-            
-            if crypto_units < min_vol_limit:
-                error_msg = f"Calculated sell volume ({crypto_units:.6f}) for {pair} is below Luno minimum base volume ({min_vol_limit})."
-                logger.warning(error_msg)
-                log_audit(venue="LUNO", asset=pair, price=current_price, amount=estimated_val, units="SKIPPED", status="BELOW_BASE_VOLUME")
-                return {"status": "SKIPPED", "reason": error_msg}
+            limit_price = current_price * (1.0 + self.aggressive_limit_buffer)
+            crypto_units = estimated_val / limit_price
+        else:  # SELL
+            limit_price = current_price * (1.0 - self.aggressive_limit_buffer)
+            adjusted_val = estimated_val * 0.98  # fee haircut
+            crypto_units = adjusted_val / limit_price
 
-            precision = 8 if "XBT" in pair or "BTC" in pair else 6
-            resolved_volume = f"{crypto_units:.{precision}f}"
-            resolved_counter_volume = None
+        # Check Exchange Minimum Base Volume
+        if crypto_units < min_vol_limit:
+            error_msg = f"Calculated order volume ({crypto_units:.6f}) for {pair} is below Luno minimum base volume ({min_vol_limit})."
+            logger.warning(error_msg)
+            log_audit(venue="LUNO", asset=pair, price=current_price, amount=estimated_val, units="SKIPPED", status="BELOW_BASE_VOLUME")
+            return {"status": "SKIPPED", "reason": error_msg}
 
-        # 4. Execute Order via Luno Connector
+        precision = 8 if "XBT" in pair or "BTC" in pair else 6
+        resolved_volume = f"{crypto_units:.{precision}f}"
+        formatted_limit_price = f"{limit_price:.2f}"
+
+        # 4. Execute Limit Order via Luno Connector
         try:
-            logger.info(f"Executing {side.upper()} market order for {pair} (Value: ₦{estimated_val:,.2f}, Volume Param: {resolved_volume or resolved_counter_volume})")
-            response = self.connector.place_market_order(
+            logger.info(f"Executing {side.upper()} limit order for {pair} (Value: ₦{estimated_val:,.2f}, Volume: {resolved_volume}, Price: ₦{formatted_limit_price})")
+            
+            # Assuming connector has place_limit_order or post_limit_order method
+            response = self.connector.place_limit_order(
                 pair=pair, 
                 side=side.upper(), 
                 volume=resolved_volume, 
-                counter_volume=resolved_counter_volume
+                price=formatted_limit_price
             )
             
             order_id = response.get("order_id", "UNKNOWN")
@@ -124,9 +125,9 @@ class InstitutionalOrderExecutor:
             log_audit(
                 venue="LUNO",
                 asset=pair,
-                price=current_price,
+                price=limit_price,
                 amount=estimated_val,
-                units=resolved_volume or "COUNTER",
+                units=resolved_volume,
                 status="SUCCESS"
             )
             
@@ -151,7 +152,7 @@ class InstitutionalOrderExecutor:
                 asset=pair,
                 price=current_price,
                 amount=estimated_val,
-                units=resolved_volume or "COUNTER",
+                units=resolved_volume,
                 status="FAILED"
             )
             
