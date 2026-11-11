@@ -5,7 +5,9 @@ import logging
 import pandas as pd
 from datetime import datetime
 
-# Ensure repository root is in sys.path for robust absolute execution in GitHub Actions & cron
+# ==========================================
+# 0. ABSOLUTE PATH RESOLUTION (CRON SAFETY)
+# ==========================================
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
@@ -18,7 +20,9 @@ from execution.order_executor import InstitutionalOrderExecutor
 from risk.circuit_breakers import CircuitBreakerManager
 from strategy.rebalancer import AutonomousRebalancer
 
-# Initialize Logger
+# ==========================================
+# 1. INITIALIZATION & CONFIGURATION
+# ==========================================
 logger = setup_logger("ICIEEngine")
 
 # Luno Exchange Minimum Base Volume Limits (Strict Exchange Compliance)
