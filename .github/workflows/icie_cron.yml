@@ -38,6 +38,6 @@ jobs:
         with:
           name: icie-audit-logs
           path: |
-            institutional_audit.log
-            trade_log.csv
+            *.log
+            *.csv
           if-no-files-found: ignore
