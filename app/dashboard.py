@@ -134,7 +134,7 @@ def safe_execute_market_order(executor, pair: str, side: str, notional_ngn: floa
         "error": f"Could not call execute_market_order with any known signature. Last error: {last_error}"
     }
 
-@st.cache_data(ttl=10, show_spinner=False)
+@st.cache_data(ttl=5, show_spinner=False)
 def fetch_luno_market_data_atomic(_connector, tickers):
     """
     Atomic live fetcher: Pulls tickers and balances in rapid succession 
