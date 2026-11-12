@@ -73,6 +73,7 @@ class InstitutionalOrderExecutor:
 
         min_base_volumes = {
             "BTCNGN": 0.0005,
+            "XBTNGN": 0.0005,
             "ETHNGN": 0.005,
             "SOLNGN": 0.05
         }
@@ -82,10 +83,9 @@ class InstitutionalOrderExecutor:
         if side.upper() == "BUY":
             limit_price = current_price * (1.0 + self.aggressive_limit_buffer)
             crypto_units = estimated_val / limit_price
-        else:  # SELL
+        else:  # SELL (Cashless exact unit calculation without arbitrary haircuts)
             limit_price = current_price * (1.0 - self.aggressive_limit_buffer)
-            adjusted_val = estimated_val * 0.98  # fee haircut
-            crypto_units = adjusted_val / limit_price
+            crypto_units = estimated_val / limit_price
 
         # Check Exchange Minimum Base Volume
         if crypto_units < min_vol_limit:
@@ -102,7 +102,6 @@ class InstitutionalOrderExecutor:
         try:
             logger.info(f"Executing {side.upper()} limit order for {pair} (Value: ₦{estimated_val:,.2f}, Volume: {resolved_volume}, Price: ₦{formatted_limit_price})")
             
-            # Assuming connector has place_limit_order or post_limit_order method
             response = self.connector.place_limit_order(
                 pair=pair, 
                 side=side.upper(), 
