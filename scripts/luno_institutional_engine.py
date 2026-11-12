@@ -19,8 +19,6 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-# CRITICAL FIX: Ensure audit log and trade CSV always exist on startup 
-# to prevent GitHub Actions artifact upload failures when zero trades occur.
 TRADE_LOG_FILE = "trade_log.csv"
 LOG_FILE = "institutional_audit.log"
 
@@ -52,26 +50,20 @@ MIN_BASE_VOLUMES = {
     "SOLNGN": 0.05
 }
 
-# Strict Minimum Order Threshold in NGN
 MIN_ORDER_NGN = 50.0
-
-# Luno Taker Fee & Safety Buffer (0.10% standard tier + 0.10% aggressive limit-crossing buffer)
 FEE_BUFFER_PCT = 0.002
-AGGRESSIVE_LIMIT_BUFFER = 0.0015  # 0.15% aggressive price cross to guarantee execution
+AGGRESSIVE_LIMIT_BUFFER = 0.0015  # 0.15% aggressive price cross
 
 def run_institutional_engine():
     """
     Executes the ICIE Closed-Loop Two-Phase Autonomous Rebalancing Engine.
-    Enforces Phase 1 (Sell Overweight -> Settle NGN Proceeds) before Phase 2 (Buy Underweight).
-    Strictly uses internal liquidation proceeds for cashless rebalancing, preventing cash drag.
+    Enforces strict live fetching without silent simulation fallbacks when credentials exist.
     """
     logger.info("[START] Initializing ICIE Autonomous Institutional Engine (Luno Live Production Node)...")
     
-    # Initialize Database & Config
     init_database()
     config = load_config()
     
-    # Credentials Check from Environment or Streamlit Secrets
     luno_key = os.environ.get("LUNO_API_KEY_ID")
     luno_secret = os.environ.get("LUNO_API_KEY_SECRET")
     
@@ -79,8 +71,11 @@ def run_institutional_engine():
     if not luno_key or not luno_secret:
         logger.warning("⚠️ Luno API credentials not found in environment. Forcing Paper Trading / Simulation Mode.")
         paper_mode = True
+    else:
+        # If credentials exist, disable paper mode unless explicitly configured otherwise
+        paper_mode = config.get("paper_mode", False)
 
-    connector = LunoConnector(luno_key, luno_secret) if not paper_mode else None
+    connector = LunoConnector(luno_key, luno_secret) if (luno_key and luno_secret) else None
     circuit_breaker = CircuitBreakerManager()
     order_executor = InstitutionalOrderExecutor(connector, circuit_breaker)
     
@@ -90,7 +85,7 @@ def run_institutional_engine():
     tickers = ["XBTNGN", "ETHNGN", "SOLNGN"]
     
     # ==========================================
-    # 2. FETCH LIVE PRICES & PORTFOLIO BALANCES
+    # 2. FETCH REAL LIVE PRICES & PORTFOLIO BALANCES
     # ==========================================
     prices = {}
     for pair in tickers:
@@ -98,7 +93,6 @@ def run_institutional_engine():
             if connector and not paper_mode:
                 prices[pair] = connector.fetch_ticker(pair)
             else:
-                # Simulated baseline prices reflecting active portfolio state
                 prices["XBTNGN"] = 101425618.0
                 prices["ETHNGN"] = 2780346.0
                 prices["SOLNGN"] = 220000.0
@@ -106,25 +100,27 @@ def run_institutional_engine():
             logger.error(f"Failed to fetch ticker for {pair}: {e}")
             prices[pair] = 0.0
 
-    # Fetch Balances (Live API or Paper Portfolio Ledger)
     ngn_balance, btc_balance, eth_balance, sol_balance = 0.0, 0.0, 0.0, 0.0
+    
     if connector and not paper_mode:
-        try:
-            balances = connector.fetch_balances()
-            for b in balances:
-                asset = b.get("asset")
-                amount = float(b.get("balance", 0.0))
-                if asset == "NGN":
-                    ngn_balance += amount
-                elif asset in ["XBT", "BTC"]:
-                    btc_balance += amount
-                elif asset == "ETH":
-                    eth_balance += amount
-                elif asset == "SOL":
-                    sol_balance += amount
-        except Exception as e:
-            logger.error(f"Failed to fetch live balances: {e}")
+        # CRITICAL FIX: Direct live fetch with zero silent fallbacks. 
+        # If Luno API fails here, it raises the exception so we know immediately.
+        logger.info("[LUNO API] Fetching live account balances directly from exchange...")
+        balances = connector.fetch_balances()
+        for b in balances:
+            asset = b.get("asset")
+            amount = float(b.get("balance", 0.0))
+            if asset == "NGN":
+                ngn_balance += amount
+            elif asset in ["XBT", "BTC"]:
+                btc_balance += amount
+            elif asset == "ETH":
+                eth_balance += amount
+            elif asset == "SOL":
+                sol_balance += amount
     else:
+        if not paper_mode:
+            raise RuntimeError("CRITICAL: Live mode requested, but Luno connector is uninitialized.")
         initial_cash = 1500.0
         initial_units = {"XBTNGN": 0.00025, "ETHNGN": 0.0065, "SOLNGN": 0.05}
         ngn_balance, units = get_paper_portfolio(initial_cash, initial_units)
@@ -136,18 +132,16 @@ def run_institutional_engine():
     holdings_val = {pair: holdings_units[pair] * prices.get(pair, 0.0) for pair in tickers}
     total_crypto_val = sum(holdings_val.values())
     
-    # CRITICAL INSTITUTIONAL ADJUSTMENT: Total Portfolio Value (TPV) evaluated strictly on crypto assets 
-    # to maintain true 50/30/20 balance without cash distortion.
     portfolio_val = total_crypto_val
 
     if portfolio_val <= 0:
         logger.error("CRITICAL: Total crypto portfolio valuation evaluated to zero. Aborting execution.")
         return
 
-    logger.info(f"[AUDIT] Crypto Portfolio Valuation (TPV): ₦{portfolio_val:,.2f} | Reserve NGN: ₦{ngn_balance:,.2f}")
+    logger.info(f"[AUDIT] Live Crypto Portfolio Valuation (TPV): ₦{portfolio_val:,.2f} | Reserve NGN: ₦{ngn_balance:,.2f}")
     
     curr_weights_pct = {pair: (holdings_val[pair] / portfolio_val * 100) if portfolio_val > 0 else 0.0 for pair in tickers}
-    logger.info(f"[AUDIT] Current Weights -> BTC: {curr_weights_pct.get('XBTNGN', 0):.1f}% | ETH: {curr_weights_pct.get('ETHNGN', 0):.1f}% | SOL: {curr_weights_pct.get('SOLNGN', 0):.1f}%")
+    logger.info(f"[AUDIT] Live Current Weights -> BTC: {curr_weights_pct.get('XBTNGN', 0):.2f}% | ETH: {curr_weights_pct.get('ETHNGN', 0):.2f}% | SOL: {curr_weights_pct.get('SOLNGN', 0):.2f}%")
 
     # ==========================================
     # 3. EVALUATE REBALANCE DRIFT
@@ -155,7 +149,7 @@ def run_institutional_engine():
     evaluation = rebalancer.evaluate_rebalance(holdings_val, ngn_balance, portfolio_val)
     
     if not evaluation.get("rebalance_triggered", False):
-        logger.info(f"[REBALANCE] Portfolio drift ({evaluation.get('max_drift_percentage', 0.0)}%) is within the 3.0% tolerance threshold. Holding position. No action required.")
+        logger.info(f"[REBALANCE] Portfolio drift ({evaluation.get('max_drift_percentage', 0.0)}%) is within the 3.0% tolerance threshold. Holding position.")
         logger.info("[COMPLETE] Institutional rebalancing audit cycle finished successfully.")
         return
 
@@ -170,7 +164,7 @@ def run_institutional_engine():
     for pair in tickers:
         current_w = curr_weights_pct.get(pair, 0.0)
         target_w = target_weights.get(pair, 0.0) * 100
-        drift = current_w - target_w  # Positive drift = Overweight
+        drift = current_w - target_w  # Positive = Overweight
 
         if drift > 1.5:  # Overweight threshold trigger
             excess_val = (drift / 100.0) * portfolio_val
@@ -183,7 +177,7 @@ def run_institutional_engine():
             sell_volume = excess_val / limit_sell_price
             min_vol_limit = MIN_BASE_VOLUMES.get(pair, 0.001)
 
-            logger.info(f"[REBALANCE - PHASE 1] Asset {pair} is overweight (Actual: {current_w:.1f}% > Target: {target_w:.1f}% | Drift: +{drift:.1f}%). Limit Sell Price: ₦{limit_sell_price:,.2f}")
+            logger.info(f"[REBALANCE - PHASE 1] Asset {pair} is overweight (Actual: {current_w:.2f}% > Target: {target_w:.1f}% | Drift: +{drift:.2f}%). Limit Sell Price: ₦{limit_sell_price:,.2f}")
 
             if sell_volume < min_vol_limit:
                 logger.warning(f"[COMPLIANCE_GATE] Calculated sell volume ({sell_volume:.6f}) for {pair} is below Luno minimum base volume ({min_vol_limit}). Skipping sell leg.")
@@ -214,7 +208,7 @@ def run_institutional_engine():
     logger.info(f"[SETTLEMENT_GATE] Internal liquidation proceeds generated: ₦{internal_proceeds_ngn:,.2f}")
     if sells_executed:
         logger.info("[SETTLEMENT_GATE] Sells confirmed. Proceeding strictly with internal proceeds for Phase 2 reallocation.")
-        time.sleep(5)  # Brief settlement buffer
+        time.sleep(5)
     else:
         logger.info("[SETTLEMENT_GATE] No liquidations executed. Halting rebalance cycle to prevent cash injection.")
         return
@@ -225,7 +219,7 @@ def run_institutional_engine():
     for pair in tickers:
         current_w = curr_weights_pct.get(pair, 0.0)
         target_w = target_weights.get(pair, 0.0) * 100
-        drift = target_w - current_w  # Positive drift = Underweight
+        drift = target_w - current_w  # Positive = Underweight
 
         if drift > 1.5:  # Underweight threshold trigger
             deficit_val = (drift / 100.0) * portfolio_val
@@ -236,13 +230,11 @@ def run_institutional_engine():
                 continue
 
             limit_buy_price = market_price * (1.0 + AGGRESSIVE_LIMIT_BUFFER)
-            
-            # Restrict allocation strictly to accumulated internal sales proceeds (Cashless Rule)
             allocation_val = min(deficit_val, internal_proceeds_ngn)
 
             if allocation_val >= MIN_ORDER_NGN:
                 buy_volume = allocation_val / limit_buy_price
-                logger.info(f"[REBALANCE - PHASE 2] Asset {pair} is underweight (Actual: {current_w:.1f}% < Target: {target_w:.1f}%). Limit Buy Price: ₦{limit_buy_price:,.2f} | Allocation: ₦{allocation_val:,.2f}")
+                logger.info(f"[REBALANCE - PHASE 2] Asset {pair} is underweight (Actual: {current_w:.2f}% < Target: {target_w:.1f}%). Limit Buy Price: ₦{limit_buy_price:,.2f} | Allocation: ₦{allocation_val:,.2f}")
                 
                 res = order_executor.execute_limit_order(
                     pair=pair,
