@@ -37,5 +37,7 @@ jobs:
         if: always()
         with:
           name: icie-audit-logs
-          path: ['institutional_audit.log', 'trade_log.csv']
+          path: |
+            institutional_audit.log
+            trade_log.csv
           if-no-files-found: ignore
