@@ -2,7 +2,8 @@ import os
 import sys
 import inspect
 import io
-import contextlib
+import logging
+from decimal import Decimal
 
 # Robustly find the repository root directory (parent of 'app')
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -18,7 +19,6 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
-import logging
 
 from core.config import load_config
 from core.logging import setup_logger
@@ -134,35 +134,52 @@ def safe_execute_market_order(executor, pair: str, side: str, notional_ngn: floa
         "error": f"Could not call execute_market_order with any known signature. Last error: {last_error}"
     }
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def fetch_luno_market_data(_connector, tickers):
+    """
+    CRITICAL: Strict live data fetcher. Strips all hardcoded fallbacks.
+    Queries live exchange tickers and wallet balances directly.
+    """
     prices = {}
     balances = []
+    
     if not _connector:
-        return {"XBTNGN": 65000000.0, "ETHNGN": 3800000.0, "SOLNGN": 220000.0}, [
-            {"asset": "NGN", "balance": "34.01"},
-            {"asset": "XBT", "balance": "0.0003"},
-            {"asset": "ETH", "balance": "0.0100"},
-            {"asset": "SOL", "balance": "0.0753"},
-        ]
+        raise RuntimeError("CRITICAL: Luno Connector uninitialized. Live credentials required.")
+
     for pair in tickers:
         try:
             prices[pair] = _connector.fetch_ticker(pair)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to fetch live ticker for {pair}: {e}")
             prices[pair] = 0.0
+
     try:
-        balances = _connector.fetch_balances()
-    except Exception:
+        raw_balances = _connector.fetch_balances()
+        if isinstance(raw_balances, list):
+            balances = raw_balances
+    except Exception as e:
+        logger.error(f"Failed to fetch live balances from Luno API: {e}")
         balances = []
+
     return prices, balances
 
 tickers = ["XBTNGN", "ETHNGN", "SOLNGN"]
 prices, balances = fetch_luno_market_data(connector, tickers)
 
-ngn_balance, btc_balance, eth_balance, sol_balance = 0.0, 0.0, 0.0, 0.0
+# Precise balance aggregation avoiding hardcoded defaults
+ngn_balance = Decimal("0.0")
+btc_balance = Decimal("0.0")
+eth_balance = Decimal("0.0")
+sol_balance = Decimal("0.0")
+
 for b in balances:
-    asset = b.get("asset") if isinstance(b, dict) else getattr(b, "get", lambda x: None)("asset")
-    amount = float(b.get("balance", 0.0) if isinstance(b, dict) else 0.0)
+    asset = b.get("asset") if isinstance(b, dict) else None
+    try:
+        amount_str = str(b.get("balance", "0.0"))
+        amount = Decimal(amount_str)
+    except Exception:
+        amount = Decimal("0.0")
+        
     if asset == "NGN":
         ngn_balance += amount
     elif asset in ["XBT", "BTC"]:
@@ -172,10 +189,15 @@ for b in balances:
     elif asset == "SOL":
         sol_balance += amount
 
-holdings_units = {"XBTNGN": btc_balance, "ETHNGN": eth_balance, "SOLNGN": sol_balance}
+holdings_units = {
+    "XBTNGN": float(btc_balance), 
+    "ETHNGN": float(eth_balance), 
+    "SOLNGN": float(sol_balance)
+}
+
 holdings_val = {pair: holdings_units[pair] * prices.get(pair, 0.0) for pair in tickers}
 total_crypto_val = sum(holdings_val.values())
-total_portfolio_val = ngn_balance + total_crypto_val
+total_portfolio_val = float(ngn_balance) + total_crypto_val
 
 # Sidebar Navigation & Controls
 app_mode = st.sidebar.radio(
@@ -197,7 +219,7 @@ if st.sidebar.button("🔄 Clear Cache & Refresh Feed"):
 # Top Metrics Banner
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Total Portfolio Capital", f"₦{total_portfolio_val:,.2f}")
-m2.metric("Liquid NGN Reserve", f"₦{ngn_balance:,.2f}")
+m2.metric("Liquid NGN Reserve", f"₦{float(ngn_balance):,.2f}")
 m3.metric("XBTNGN Spot Price", f"₦{prices.get('XBTNGN', 0.0):,.2f}")
 m4.metric("ETHNGN Spot Price", f"₦{prices.get('ETHNGN', 0.0):,.2f}")
 
@@ -229,7 +251,6 @@ if app_mode == "Portfolio & Rebalancing Execution":
     breakdown_df = pd.DataFrame(breakdown_data)
     st.dataframe(breakdown_df, use_container_width=True)
 
-    # Interactive Visual Comparison Chart
     col_chart1, col_chart2 = st.columns(2)
     with col_chart1:
         fig_actual = px.pie(
@@ -251,7 +272,7 @@ if app_mode == "Portfolio & Rebalancing Execution":
         )
         st.plotly_chart(fig_target, use_container_width=True)
 
-    evaluation = rebalancer.evaluate_rebalance(holdings_val, ngn_balance, total_portfolio_val)
+    evaluation = rebalancer.evaluate_rebalance(holdings_val, float(ngn_balance), total_portfolio_val)
     st.info(f"📊 **Portfolio Max Drift:** {evaluation.get('max_drift_percentage', 0.0)}% (Threshold: 3.0%)")
 
     col_btn1, col_btn2 = st.columns(2)
@@ -263,7 +284,6 @@ if app_mode == "Portfolio & Rebalancing Execution":
                 else:
                     st.success("✅ Drift exceeds 3% threshold. Executing Settlement-Verified Rebalance...")
                     
-                    # Capture execution logs in real-time and display in UI
                     log_capture_string = io.StringIO()
                     handler = logging.StreamHandler(log_capture_string)
                     handler.setLevel(logging.INFO)
