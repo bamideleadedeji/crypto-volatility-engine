@@ -138,7 +138,7 @@ def safe_execute_market_order(executor, pair: str, side: str, notional_ngn: floa
 def fetch_luno_market_data_atomic(_connector, tickers):
     """
     Atomic live fetcher: Pulls exact unadjusted exchange tickers and wallet balances 
-    with zero hardcoded fallback simulation data and zero artificial adjustments.
+    with zero hardcoded fallback simulation data.
     """
     prices = {}
     balances = []
@@ -166,7 +166,7 @@ def fetch_luno_market_data_atomic(_connector, tickers):
 tickers = ["XBTNGN", "ETHNGN", "SOLNGN"]
 prices, balances = fetch_luno_market_data_atomic(connector, tickers)
 
-# Strict unadjusted accounting aggregation summing balance + reserved wallets
+# Strict accounting aggregation summing balance + reserved wallets
 ngn_balance = Decimal("0.0")
 btc_balance = Decimal("0.0")
 eth_balance = Decimal("0.0")
