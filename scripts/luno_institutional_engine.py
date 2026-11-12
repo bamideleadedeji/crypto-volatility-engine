@@ -13,11 +13,24 @@ import pandas as pd
 from datetime import datetime
 
 # ==========================================
-# 0. ABSOLUTE PATH RESOLUTION (CRON SAFETY)
+# 0. ABSOLUTE PATH RESOLUTION & LOG INITIALIZATION
 # ==========================================
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
+
+# CRITICAL FIX: Ensure audit log and trade CSV always exist on startup 
+# to prevent GitHub Actions artifact upload failures when zero trades occur.
+TRADE_LOG_FILE = "trade_log.csv"
+LOG_FILE = "institutional_audit.log"
+
+if not os.path.exists(TRADE_LOG_FILE):
+    df_init = pd.DataFrame(columns=["timestamp", "asset", "side", "volume", "execution_price", "total_value_ngn", "status"])
+    df_init.to_csv(TRADE_LOG_FILE, index=False)
+
+if not os.path.exists(LOG_FILE):
+    with open(LOG_FILE, "w", encoding="utf-8") as f:
+        f.write(f"{datetime.utcnow().isoformat()} [INFO] ICIE Audit Log Initialized.\n")
 
 from core.config import load_config
 from core.logging import setup_logger
