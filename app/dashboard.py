@@ -134,11 +134,11 @@ def safe_execute_market_order(executor, pair: str, side: str, notional_ngn: floa
         "error": f"Could not call execute_market_order with any known signature. Last error: {last_error}"
     }
 
-@st.cache_data(ttl=15, show_spinner=False)
-def fetch_luno_market_data(_connector, tickers):
+@st.cache_data(ttl=10, show_spinner=False)
+def fetch_luno_market_data_atomic(_connector, tickers):
     """
-    CRITICAL: Strict live data fetcher. Strips all hardcoded fallbacks.
-    Queries live exchange tickers and wallet balances directly.
+    Atomic live fetcher: Pulls tickers and balances in rapid succession 
+    with zero hardcoded fallback simulation data.
     """
     prices = {}
     balances = []
@@ -148,7 +148,7 @@ def fetch_luno_market_data(_connector, tickers):
 
     for pair in tickers:
         try:
-            prices[pair] = _connector.fetch_ticker(pair)
+            prices[pair] = float(_connector.fetch_ticker(pair))
         except Exception as e:
             logger.error(f"Failed to fetch live ticker for {pair}: {e}")
             prices[pair] = 0.0
@@ -164,9 +164,9 @@ def fetch_luno_market_data(_connector, tickers):
     return prices, balances
 
 tickers = ["XBTNGN", "ETHNGN", "SOLNGN"]
-prices, balances = fetch_luno_market_data(connector, tickers)
+prices, balances = fetch_luno_market_data_atomic(connector, tickers)
 
-# Precise balance aggregation avoiding hardcoded defaults
+# Precise decimal aggregation summing balance + reserved wallets
 ngn_balance = Decimal("0.0")
 btc_balance = Decimal("0.0")
 eth_balance = Decimal("0.0")
@@ -175,19 +175,20 @@ sol_balance = Decimal("0.0")
 for b in balances:
     asset = b.get("asset") if isinstance(b, dict) else None
     try:
-        amount_str = str(b.get("balance", "0.0"))
-        amount = Decimal(amount_str)
+        balance_val = Decimal(str(b.get("balance", "0.0")))
+        reserved_val = Decimal(str(b.get("reserved", "0.0")))
+        total_asset_amount = balance_val + reserved_val
     except Exception:
-        amount = Decimal("0.0")
+        total_asset_amount = Decimal("0.0")
         
     if asset == "NGN":
-        ngn_balance += amount
+        ngn_balance += total_asset_amount
     elif asset in ["XBT", "BTC"]:
-        btc_balance += amount
+        btc_balance += total_asset_amount
     elif asset == "ETH":
-        eth_balance += amount
+        eth_balance += total_asset_amount
     elif asset == "SOL":
-        sol_balance += amount
+        sol_balance += total_asset_amount
 
 holdings_units = {
     "XBTNGN": float(btc_balance), 
