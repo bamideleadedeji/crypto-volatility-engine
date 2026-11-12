@@ -1,3 +1,10 @@
+#!/usr/bin/env python3
+"""
+ICIE Autonomous Institutional Engine (Luno Live Production Node)
+Author: Bamidele Adedeji, Principal Consultant (Bamidele & Associates)
+Objective: Institutional Crypto Investment & Cashless Self-Rebalancing (50% BTC, 30% ETH, 20% SOL)
+"""
+
 import os
 import sys
 import time
@@ -27,7 +34,7 @@ logger = setup_logger("ICIEEngine")
 
 # Luno Exchange Minimum Base Volume Limits (Strict Exchange Compliance)
 MIN_BASE_VOLUMES = {
-    "BTCNGN": 0.0005,
+    "XBTNGN": 0.0005,
     "ETHNGN": 0.005,
     "SOLNGN": 0.05
 }
@@ -37,13 +44,13 @@ MIN_ORDER_NGN = 50.0
 
 # Luno Taker Fee & Safety Buffer (0.10% standard tier + 0.10% aggressive limit-crossing buffer)
 FEE_BUFFER_PCT = 0.002
-AGGRESSIVE_LIMIT_BUFFER = 0.0015  # 0.15% aggressive price cross to guarantee execution (NGX style)
+AGGRESSIVE_LIMIT_BUFFER = 0.0015  # 0.15% aggressive price cross to guarantee execution
 
 def run_institutional_engine():
     """
     Executes the ICIE Closed-Loop Two-Phase Autonomous Rebalancing Engine.
-    Enforces Phase 1 (Sell Overweight -> Settle NGN) before Phase 2 (Buy Underweight).
-    Applies aggressive limit-pricing buffers and Luno exchange compliance rules.
+    Enforces Phase 1 (Sell Overweight -> Settle NGN Proceeds) before Phase 2 (Buy Underweight).
+    Strictly uses internal liquidation proceeds for cashless rebalancing, preventing cash drag.
     """
     logger.info("[START] Initializing ICIE Autonomous Institutional Engine (Luno Live Production Node)...")
     
@@ -78,7 +85,7 @@ def run_institutional_engine():
             if connector and not paper_mode:
                 prices[pair] = connector.fetch_ticker(pair)
             else:
-                # Simulated baseline prices reflecting ~₦60k portfolio baseline
+                # Simulated baseline prices reflecting active portfolio state
                 prices["XBTNGN"] = 101425618.0
                 prices["ETHNGN"] = 2780346.0
                 prices["SOLNGN"] = 220000.0
@@ -105,7 +112,6 @@ def run_institutional_engine():
         except Exception as e:
             logger.error(f"Failed to fetch live balances: {e}")
     else:
-        # Load Paper Portfolio baseline matching live capital state (~₦60,000)
         initial_cash = 1500.0
         initial_units = {"XBTNGN": 0.00025, "ETHNGN": 0.0065, "SOLNGN": 0.05}
         ngn_balance, units = get_paper_portfolio(initial_cash, initial_units)
@@ -116,9 +122,16 @@ def run_institutional_engine():
     holdings_units = {"XBTNGN": btc_balance, "ETHNGN": eth_balance, "SOLNGN": sol_balance}
     holdings_val = {pair: holdings_units[pair] * prices.get(pair, 0.0) for pair in tickers}
     total_crypto_val = sum(holdings_val.values())
-    portfolio_val = ngn_balance + total_crypto_val
+    
+    # CRITICAL INSTITUTIONAL ADJUSTMENT: Total Portfolio Value (TPV) evaluated strictly on crypto assets 
+    # to maintain true 50/30/20 balance without cash distortion.
+    portfolio_val = total_crypto_val
 
-    logger.info(f"[AUDIT] Portfolio Value: ₦{portfolio_val:,.2f} | NGN Cash: ₦{ngn_balance:,.2f}")
+    if portfolio_val <= 0:
+        logger.error("CRITICAL: Total crypto portfolio valuation evaluated to zero. Aborting execution.")
+        return
+
+    logger.info(f"[AUDIT] Crypto Portfolio Valuation (TPV): ₦{portfolio_val:,.2f} | Reserve NGN: ₦{ngn_balance:,.2f}")
     
     curr_weights_pct = {pair: (holdings_val[pair] / portfolio_val * 100) if portfolio_val > 0 else 0.0 for pair in tickers}
     logger.info(f"[AUDIT] Current Weights -> BTC: {curr_weights_pct.get('XBTNGN', 0):.1f}% | ETH: {curr_weights_pct.get('ETHNGN', 0):.1f}% | SOL: {curr_weights_pct.get('SOLNGN', 0):.1f}%")
@@ -133,12 +146,14 @@ def run_institutional_engine():
         logger.info("[COMPLETE] Institutional rebalancing audit cycle finished successfully.")
         return
 
-    logger.info(f"✅ Drift exceeds threshold ({evaluation.get('max_drift_percentage', 0.0)}%). Initiating Two-Phase Rebalance Sequence with Aggressive Limits.")
+    logger.info(f"✅ Drift exceeds threshold ({evaluation.get('max_drift_percentage', 0.0)}%). Initiating Two-Phase Cashless Rebalance Sequence.")
 
     # ==========================================
-    # 4. PHASE 1: LIQUIDATE OVERWEIGHT ASSETS (SELL LEG WITH BUFFER)
+    # 4. PHASE 1: LIQUIDATE OVERWEIGHT ASSETS (SELL LEG)
     # ==========================================
     sells_executed = False
+    internal_proceeds_ngn = 0.0
+
     for pair in tickers:
         current_w = curr_weights_pct.get(pair, 0.0)
         target_w = target_weights.get(pair, 0.0) * 100
@@ -151,16 +166,14 @@ def run_institutional_engine():
             if market_price <= 0:
                 continue
 
-            # Apply aggressive limit pricing for selling (slightly below market bid to ensure immediate fill)
             limit_sell_price = market_price * (1.0 - AGGRESSIVE_LIMIT_BUFFER)
             sell_volume = excess_val / limit_sell_price
             min_vol_limit = MIN_BASE_VOLUMES.get(pair, 0.001)
 
             logger.info(f"[REBALANCE - PHASE 1] Asset {pair} is overweight (Actual: {current_w:.1f}% > Target: {target_w:.1f}% | Drift: +{drift:.1f}%). Limit Sell Price: ₦{limit_sell_price:,.2f}")
 
-            # Enforce Luno Minimum Base Volume Gate
             if sell_volume < min_vol_limit:
-                logger.warning(f"[COMPLIANCE_GATE] Calculated sell volume ({sell_volume:.6f}) for {pair} is below Luno minimum base volume ({min_vol_limit}). Skipping sell leg until accumulation threshold is met.")
+                logger.warning(f"[COMPLIANCE_GATE] Calculated sell volume ({sell_volume:.6f}) for {pair} is below Luno minimum base volume ({min_vol_limit}). Skipping sell leg.")
                 log_audit("LUNO", pair, market_price, excess_val, "SKIPPED", "BELOW_BASE_VOLUME")
                 continue
 
@@ -175,23 +188,26 @@ def run_institutional_engine():
                 
                 if res.get("status") == "SUCCESS":
                     sells_executed = True
+                    net_proceeds = excess_val * (1.0 - FEE_BUFFER_PCT)
+                    internal_proceeds_ngn += net_proceeds
+                    
                     if paper_mode:
-                        net_proceeds = excess_val * (1.0 - FEE_BUFFER_PCT)
-                        ngn_balance += net_proceeds
                         holdings_units[pair] -= sell_volume
                         update_paper_portfolio(ngn_balance, holdings_units)
 
     # ==========================================
-    # 5. SETTLEMENT GATE & LEDGER RE-VERIFICATION
+    # 5. SETTLEMENT GATE & LEDGER VERIFICATION
     # ==========================================
-    logger.info(f"[SETTLEMENT_GATE] Verifying NGN funding wallet balance after liquidation leg: ₦{ngn_balance:,.2f}")
+    logger.info(f"[SETTLEMENT_GATE] Internal liquidation proceeds generated: ₦{internal_proceeds_ngn:,.2f}")
     if sells_executed:
-        logger.info("[SETTLEMENT_GATE] Liquidation proceeds confirmed in wallet. Proceeding to Phase 2 (Reallocation).")
+        logger.info("[SETTLEMENT_GATE] Sells confirmed. Proceeding strictly with internal proceeds for Phase 2 reallocation.")
+        time.sleep(5)  # Brief settlement buffer
     else:
-        logger.info("[SETTLEMENT_GATE] No liquidations executed. Proceeding with existing NGN reserve balance check.")
+        logger.info("[SETTLEMENT_GATE] No liquidations executed. Halting rebalance cycle to prevent cash injection.")
+        return
 
     # ==========================================
-    # 6. PHASE 2: REALLOCATE NGN TO UNDERWEIGHT ASSETS (BUY LEG WITH BUFFER)
+    # 6. PHASE 2: REALLOCATE INTERNAL PROCEEDS TO UNDERWEIGHT ASSETS (BUY LEG)
     # ==========================================
     for pair in tickers:
         current_w = curr_weights_pct.get(pair, 0.0)
@@ -202,16 +218,14 @@ def run_institutional_engine():
             deficit_val = (drift / 100.0) * portfolio_val
             market_price = prices.get(pair, 0.0)
 
-            if market_price <= 0 or ngn_balance < MIN_ORDER_NGN:
-                logger.info(f"[REBALANCE - PHASE 2] Insufficient NGN cash (₦{ngn_balance:,.2f}) to fund underweight asset {pair}. Holding cash reserve.")
+            if market_price <= 0 or internal_proceeds_ngn < MIN_ORDER_NGN:
+                logger.info(f"[REBALANCE - PHASE 2] Insufficient internal liquidation proceeds (₦{internal_proceeds_ngn:,.2f}) to fund underweight asset {pair}.")
                 continue
 
-            # Apply aggressive limit pricing for buying (slightly above market ask to ensure execution without runaways)
             limit_buy_price = market_price * (1.0 + AGGRESSIVE_LIMIT_BUFFER)
             
-            # Apply fee buffer safety margin: Allocate up to deficit, leaving room for taker fees & limit buffer
-            safe_ngn_available = ngn_balance * (1.0 - FEE_BUFFER_PCT)
-            allocation_val = min(deficit_val, safe_ngn_available)
+            # Restrict allocation strictly to accumulated internal sales proceeds (Cashless Rule)
+            allocation_val = min(deficit_val, internal_proceeds_ngn)
 
             if allocation_val >= MIN_ORDER_NGN:
                 buy_volume = allocation_val / limit_buy_price
@@ -226,13 +240,14 @@ def run_institutional_engine():
                 logger.info(f"[EXECUTION RESULT - LIMIT BUY {pair}]: {res}")
 
                 if res.get("status") == "SUCCESS":
+                    total_cost_deduction = allocation_val * (1.0 + FEE_BUFFER_PCT)
+                    internal_proceeds_ngn -= total_cost_deduction
+                    
                     if paper_mode:
-                        total_cost_deduction = allocation_val * (1.0 + FEE_BUFFER_PCT)
-                        ngn_balance -= total_cost_deduction
                         holdings_units[pair] += buy_volume
                         update_paper_portfolio(ngn_balance, holdings_units)
 
-    logger.info("[COMPLETE] Institutional rebalancing audit cycle finished successfully.")
+    logger.info("[COMPLETE] Institutional cashless rebalancing audit cycle finished successfully.")
 
 if __name__ == "__main__":
     run_institutional_engine()
