@@ -1,3 +1,10 @@
+"""
+Institutional Crypto Investment Engine (ICIE) - Enterprise Intelligence Dashboard
+Author: Bamidele & Associates
+Description: Professional institutional portfolio monitoring, dynamic exchange-floor drift telemetry,
+econometric risk analytics, interactive order console, and immutable audit ledger.
+"""
+
 import os
 import sys
 import inspect
@@ -27,7 +34,7 @@ from execution.luno_connector import LunoConnector
 from execution.order_executor import InstitutionalOrderExecutor
 from risk.risk_manager import RiskManager
 from risk.circuit_breakers import CircuitBreakerManager
-from strategy.rebalancer import AutonomousRebalancer
+from strategy.rebalancer import ICIERebalancer, TARGET_WEIGHTS, MIN_BASE_VOLUMES, MIN_FIAT_NGN
 from risk.portfolio_econometric import PortfolioEconometricEngine
 from backtest.engine import BacktestEngine
 from strategy.performance_attribution import PerformanceAttributionEngine
@@ -47,7 +54,6 @@ init_database()
 
 risk_manager = RiskManager(config)
 circuit_breaker = CircuitBreakerManager()
-rebalancer = AutonomousRebalancer(target_weights=config.get("target_weights", {"XBTNGN": 0.50, "ETHNGN": 0.30, "SOLNGN": 0.20}))
 quant_engine = PortfolioEconometricEngine()
 backtest_engine = BacktestEngine(initial_capital=10_000_000.0)
 attribution_engine = PerformanceAttributionEngine()
@@ -73,6 +79,7 @@ if not luno_key or not luno_secret:
 
 connector = LunoConnector(luno_key, luno_secret) if (luno_key and luno_secret) else None
 order_executor = InstitutionalOrderExecutor(connector, circuit_breaker) if connector else None
+rebalancer = ICIERebalancer(luno_key or "dummy", luno_secret or "dummy", dry_run=True) if (luno_key and luno_secret) else ICIERebalancer("dummy", "dummy", dry_run=True)
 
 def safe_execute_market_order(executor, pair: str, side: str, notional_ngn: float, current_price: float) -> dict:
     if executor is None:
@@ -148,14 +155,20 @@ def fetch_luno_market_data_atomic(_connector, tickers):
 
     for pair in tickers:
         try:
-            prices[pair] = float(_connector.fetch_ticker(pair))
+            # Handle standard pair mapping
+            coin = pair.replace("NGN", "")
+            spot_dict = _connector.get_spot_prices()
+            prices[pair] = float(spot_dict.get(coin, 0.0))
         except Exception as e:
             logger.error(f"Failed to fetch live ticker for {pair}: {e}")
             prices[pair] = 0.0
 
     try:
-        raw_balances = _connector.fetch_balances()
-        if isinstance(raw_balances, list):
+        raw_balances = _connector.get_balances()
+        if isinstance(raw_balances, dict):
+            # Convert dictionary format to list of dicts for compatibility
+            balances = [{"asset": k, "balance": str(v), "reserved": "0.0"} for k, v in raw_balances.items()]
+        elif isinstance(raw_balances, list):
             balances = raw_balances
     except Exception as e:
         logger.error(f"Failed to fetch live balances from Luno API: {e}")
@@ -233,20 +246,47 @@ if app_mode == "Portfolio & Rebalancing Execution":
     col_w2.metric("ETH Target Allocation", "30%")
     col_w3.metric("SOL Target Allocation", "20%")
 
-    st.markdown("### Current Asset Breakdown & Drift Analysis")
+    st.markdown("### Current Asset Breakdown & Dynamic Exchange-Floor Telemetry")
     
+    # Evaluate drift using dynamic exchange floors
+    portfolio_state_dict = {
+        'total_portfolio': Decimal(str(total_portfolio_val)),
+        'crypto_subtotal': Decimal(str(total_crypto_val)),
+        'ngn_reserve': ngn_balance,
+        'wallet_quantities': {'XBT': btc_balance, 'ETH': eth_balance, 'SOL': sol_balance, 'NGN': ngn_balance},
+        'spot_prices': {'XBT': Decimal(str(prices.get('XBTNGN', 0))), 'ETH': Decimal(str(prices.get('ETHNGN', 0))), 'SOL': Decimal(str(prices.get('SOLNGN', 0)))},
+        'asset_values': {'XBT': Decimal(str(holdings_val['XBTNGN'])), 'ETH': Decimal(str(holdings_val['ETHNGN'])), 'SOL': Decimal(str(holdings_val['SOLNGN']))}
+    }
+    
+    drift_detected, drift_analysis = rebalancer.evaluate_drift(portfolio_state_dict)
+
     breakdown_data = []
     for pair in tickers:
+        coin = pair.replace("NGN", "")
+        # Map XBT to XBT
+        map_coin = 'XBT' if coin == 'BTC' else coin
+        if coin == 'XBT':
+            map_coin = 'XBT'
+        elif coin == 'BTC':
+            map_coin = 'XBT'
+            
+        data = drift_analysis.get(map_coin, {})
         val = holdings_val[pair]
         curr_w = (val / total_portfolio_val * 100) if total_portfolio_val > 0 else 0.0
-        target_w = rebalancer.target_weights[pair] * 100
+        target_w = float(TARGET_WEIGHTS.get(map_coin, Decimal('0')) * 100)
+        dyn_thresh = float(data.get('dynamic_threshold', 0.05) * 100)
+        min_base = float(MIN_BASE_VOLUMES.get(map_coin, 0.0))
+        
         breakdown_data.append({
             "Asset Pair": pair,
             "Units": holdings_units[pair],
             "Market Value (₦)": val,
             "Current Weight (%)": curr_w,
             "Target Weight (%)": target_w,
-            "Drift (%)": curr_w - target_w
+            "Drift (%)": curr_w - target_w,
+            "Dynamic Threshold (%)": dyn_thresh,
+            "Base Floor": f"{min_base} {map_coin}",
+            "Compliance Status": "🚨 Actionable Breach" if data.get('breached') else "✅ Within Tolerance"
         })
     
     breakdown_df = pd.DataFrame(breakdown_data)
@@ -273,17 +313,17 @@ if app_mode == "Portfolio & Rebalancing Execution":
         )
         st.plotly_chart(fig_target, use_container_width=True)
 
-    evaluation = rebalancer.evaluate_rebalance(holdings_val, float(ngn_balance), total_portfolio_val)
-    st.info(f"📊 **Portfolio Max Drift:** {evaluation.get('max_drift_percentage', 0.0)}% (Threshold: 3.0%)")
+    max_drift = max([abs(d.get('drift', 0)) for d in drift_analysis.values()]) if drift_analysis else 0.0
+    st.info(f"📊 **Max Absolute Drift:** {max_drift*100:.2f}% | **Engine Status:** {'Drift Exceeded (Ready for Settlement)' if drift_detected else 'Within Exchange-Floor Tolerances'}")
 
     col_btn1, col_btn2 = st.columns(2)
     with col_btn1:
         if st.button("🚀 Execute Autonomous Closed-Loop Rebalance", use_container_width=True):
             try:
-                if not evaluation.get("rebalance_triggered", False):
-                    st.info("⏸️ Rebalance skipped: Portfolio drift is within the 3% tolerance threshold. No action required.")
+                if not drift_detected:
+                    st.info("⏸️ Rebalance skipped: Portfolio drift is within dynamic exchange-floor limits. No action required.")
                 else:
-                    st.success("✅ Drift exceeds 3% threshold. Executing Settlement-Verified Rebalance...")
+                    st.success("✅ Drift exceeds exchange-floor threshold. Executing Settlement-Verified Rebalance...")
                     
                     log_capture_string = io.StringIO()
                     handler = logging.StreamHandler(log_capture_string)
@@ -293,8 +333,8 @@ if app_mode == "Portfolio & Rebalancing Execution":
                     root_logger.addHandler(handler)
                     
                     try:
-                        from scripts.luno_institutional_engine import run_institutional_engine
-                        run_institutional_engine()
+                        rebalancer.dry_run = paper_mode
+                        rebalancer.execute_rebalance()
                         execution_output = log_capture_string.getvalue()
                     except Exception as engine_err:
                         execution_output = f"Execution Exception: {str(engine_err)}"
