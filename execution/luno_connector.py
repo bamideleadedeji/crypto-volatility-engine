@@ -1,7 +1,7 @@
 """
 Institutional Crypto Investment Engine (ICIE) - Luno API Connector
-Enforces strict exchange authentication, decimal precision, and 
-balance + reserved wallet aggregation to match Luno mobile app reality.
+Enforces strict exchange authentication, decimal precision, 
+balance + reserved wallet aggregation, and secure order dispatch.
 """
 
 import logging
@@ -101,3 +101,27 @@ class LunoConnector:
             'spot_prices': prices,
             'asset_values': asset_values
         }
+
+    def post_order(self, pair: str, side: str, volume: Decimal, price: Decimal):
+        """
+        Dispatches a limit order to Luno /postorder endpoint with strict error logging.
+        """
+        endpoint = f"{self.base_url}/postorder"
+        payload = {
+            'pair': pair,
+            'type': side,
+            'volume': str(volume),
+            'price': str(price)
+        }
+        try:
+            response = requests.post(endpoint, data=payload, auth=(self.api_key_id, self.api_key_secret), timeout=10)
+            if response.status_code != 200:
+                logger.error(f"Luno Order Rejection {response.status_code}: {response.text}")
+                return {"success": False, "status_code": response.status_code, "error": response.text}
+            
+            res_data = response.json()
+            logger.info(f"Order successfully placed on {pair} ({side}): {res_data}")
+            return {"success": True, "data": res_data}
+        except Exception as e:
+            logger.error(f"Exception during Luno order dispatch: {str(e)}")
+            return {"success": False, "error": str(e)}
