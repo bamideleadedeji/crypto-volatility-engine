@@ -86,7 +86,7 @@ class ICIERebalancer:
 
     def evaluate_rebalance(self, holdings_val, ngn_balance, total_portfolio_val):
         """
-        Compatibility wrapper for dashboard calls.
+        Compatibility wrapper for legacy dashboard calls.
         """
         state = self.fetch_live_portfolio()
         drift_detected, analysis = self.evaluate_drift(state)
@@ -129,6 +129,7 @@ class ICIERebalancer:
             elif diff < 0:
                 underweight_actions.append({'asset': asset, 'deficit_val': abs(diff)})
 
+        # Phase 1: Liquidation Leg (Sell Overweight into internal NGN proceeds)
         liquidated_ngn = Decimal('0')
         for item in overweight_actions:
             asset = item['asset']
@@ -139,8 +140,10 @@ class ICIERebalancer:
             order_val = sell_qty * price
             min_base_vol = MIN_BASE_VOLUMES.get(asset, Decimal('0'))
 
+            # Compliance Gate: Check Fiat Floor and Hard Base Volume Floor
             if order_val < MIN_FIAT_NGN or sell_qty < min_base_vol:
-                logger.info(f"[COMPLIANCE_GATE] Sell order for {asset} below Luno minimums. Skipping.")
+                logger.info(f"[COMPLIANCE_GATE] Sell order for {asset} (Qty: {sell_qty}, Val: ₦{order_val:,.2f}) "
+                            f"is below Luno minimums. Skipping sell leg.")
                 continue
 
             pair = f"{asset}NGN"
@@ -153,9 +156,10 @@ class ICIERebalancer:
             liquidated_ngn += order_val
 
         if liquidated_ngn <= 0:
-            logger.info("[SETTLEMENT_GATE] No valid liquidations met Luno minimums. Halting cycle.")
+            logger.info("[SETTLEMENT_GATE] No valid liquidations met Luno minimum volume and fiat floors. Halting cashless cycle.")
             return {"status": "SKIPPED_MIN_VOLUME", "liquidated_ngn": 0.0}
 
+        # Phase 2: Reallocation Leg (Buy Underweight using strictly internal liquidated NGN proceeds)
         total_deficit = sum([item['deficit_val'] for item in underweight_actions])
         if total_deficit <= 0:
             logger.info("No underweight assets to fund.")
@@ -169,6 +173,7 @@ class ICIERebalancer:
             allocated_ngn = liquidated_ngn * allocation_share
             
             if allocated_ngn < MIN_FIAT_NGN:
+                logger.info(f"[COMPLIANCE_GATE] Allocated order value ₦{allocated_ngn:,.2f} for {asset} is below ₦50. Skipping buy leg.")
                 continue
 
             price = state['spot_prices'][asset]
@@ -177,7 +182,8 @@ class ICIERebalancer:
             min_base_vol = MIN_BASE_VOLUMES.get(asset, Decimal('0'))
 
             if order_val < MIN_FIAT_NGN or buy_qty < min_base_vol:
-                logger.info(f"[COMPLIANCE_GATE] Buy order for {asset} below Luno minimums. Skipping.")
+                logger.info(f"[COMPLIANCE_GATE] Buy order for {asset} (Qty: {buy_qty}, Val: ₦{order_val:,.2f}) "
+                            f"is below Luno minimums. Skipping.")
                 continue
 
             pair = f"{asset}NGN"
@@ -190,5 +196,5 @@ class ICIERebalancer:
         logger.info("ICIE Autonomous Cashless Rebalance Cycle Completed Successfully.")
         return {"status": "SUCCESS", "liquidated_ngn": float(liquidated_ngn)}
 
-# Export alias for backward compatibility
+# Export both class names to ensure 100% import compatibility across all modules
 AutonomousRebalancer = ICIERebalancer
