@@ -1,6 +1,7 @@
 import logging
 import hashlib
 from datetime import datetime
+from decimal import Decimal
 from execution.luno_connector import LunoConnector
 from risk.circuit_breakers import CircuitBreakerManager
 from database.repository import check_idempotency, record_order, log_audit
@@ -79,11 +80,11 @@ class InstitutionalOrderExecutor:
         }
         min_vol_limit = min_base_volumes.get(pair, 0.001)
 
-        # Apply aggressive limit pricing (NGX style: crossing the spread slightly to ensure fill)
+        # Apply aggressive limit pricing
         if side.upper() == "BUY":
             limit_price = current_price * (1.0 + self.aggressive_limit_buffer)
             crypto_units = estimated_val / limit_price
-        else:  # SELL (Cashless exact unit calculation without arbitrary haircuts)
+        else:  # SELL
             limit_price = current_price * (1.0 - self.aggressive_limit_buffer)
             crypto_units = estimated_val / limit_price
 
@@ -98,18 +99,18 @@ class InstitutionalOrderExecutor:
         resolved_volume = f"{crypto_units:.{precision}f}"
         formatted_limit_price = f"{limit_price:.2f}"
 
-        # 4. Execute Limit Order via Luno Connector
+        # 4. Execute via Luno Connector (aligned to connector's post_order method)
         try:
-            logger.info(f"Executing {side.upper()} limit order for {pair} (Value: ₦{estimated_val:,.2f}, Volume: {resolved_volume}, Price: ₦{formatted_limit_price})")
+            logger.info(f"Executing {side.upper()} order for {pair} (Value: ₦{estimated_val:,.2f}, Volume: {resolved_volume}, Price: ₦{formatted_limit_price})")
             
-            response = self.connector.place_limit_order(
+            response = self.connector.post_order(
                 pair=pair, 
                 side=side.upper(), 
-                volume=resolved_volume, 
-                price=formatted_limit_price
+                volume=Decimal(resolved_volume), 
+                price=Decimal(formatted_limit_price)
             )
             
-            order_id = response.get("order_id", "UNKNOWN")
+            order_id = response.get("data", {}).get("order_id", "UNKNOWN") if isinstance(response.get("data"), dict) else "SUCCESS"
             
             # 5. Record to Orders Table & Audit Ledger
             record_order(
@@ -156,3 +157,7 @@ class InstitutionalOrderExecutor:
             )
             
             return {"status": "FAILED", "error": error_msg}
+
+    # Seamless alias for dashboard and rebalancer calls expecting execute_market_order
+    def execute_market_order(self, **kwargs) -> dict:
+        return self.execute_limit_order(**kwargs)
