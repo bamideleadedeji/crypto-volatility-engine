@@ -29,6 +29,7 @@ jobs:
           LUNO_API_KEY_ID: ${{ secrets.LUNO_API_KEY_ID }}
           LUNO_API_KEY_SECRET: ${{ secrets.LUNO_API_KEY_SECRET }}
           PYTHONPATH: ${{ github.workspace }}
+          PYTHONUNBUFFERED: '1'
         run: |
           python scripts/luno_institutional_engine.py
 
