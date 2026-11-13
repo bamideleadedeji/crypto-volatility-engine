@@ -79,7 +79,12 @@ if not luno_key or not luno_secret:
 
 connector = LunoConnector(luno_key, luno_secret) if (luno_key and luno_secret) else None
 order_executor = InstitutionalOrderExecutor(connector, circuit_breaker) if connector else None
-rebalancer = ICIERebalancer(luno_key or "dummy", luno_secret or "dummy", dry_run=True) if (luno_key and luno_secret) else ICIERebalancer("dummy", "dummy", dry_run=True)
+
+# Paper Trading Mode Check
+paper_mode = st.sidebar.checkbox("🔒 Paper Trading Mode (Dry Run)", value=config.get("paper_mode", True))
+
+# Instantiate ICIERebalancer passing connector and order_executor per institutional architecture
+rebalancer = ICIERebalancer(connector, order_executor, dry_run=paper_mode)
 
 def safe_execute_market_order(executor, pair: str, side: str, notional_ngn: float, current_price: float) -> dict:
     if executor is None:
@@ -155,7 +160,6 @@ def fetch_luno_market_data_atomic(_connector, tickers):
 
     for pair in tickers:
         try:
-            # Handle standard pair mapping
             coin = pair.replace("NGN", "")
             spot_dict = _connector.get_spot_prices()
             prices[pair] = float(spot_dict.get(coin, 0.0))
@@ -166,7 +170,6 @@ def fetch_luno_market_data_atomic(_connector, tickers):
     try:
         raw_balances = _connector.get_balances()
         if isinstance(raw_balances, dict):
-            # Convert dictionary format to list of dicts for compatibility
             balances = [{"asset": k, "balance": str(v), "reserved": "0.0"} for k, v in raw_balances.items()]
         elif isinstance(raw_balances, list):
             balances = raw_balances
@@ -224,7 +227,6 @@ app_mode = st.sidebar.radio(
         "SQLite Audit Ledger",
     ],
 )
-paper_mode = st.sidebar.checkbox("🔒 Paper Trading Mode (Dry Run)", value=config.get("paper_mode", True))
 
 if st.sidebar.button("🔄 Clear Cache & Refresh Feed"):
     st.cache_data.clear()
@@ -248,7 +250,6 @@ if app_mode == "Portfolio & Rebalancing Execution":
 
     st.markdown("### Current Asset Breakdown & Dynamic Exchange-Floor Telemetry")
     
-    # Evaluate drift using dynamic exchange floors
     portfolio_state_dict = {
         'total_portfolio': Decimal(str(total_portfolio_val)),
         'crypto_subtotal': Decimal(str(total_crypto_val)),
@@ -263,7 +264,6 @@ if app_mode == "Portfolio & Rebalancing Execution":
     breakdown_data = []
     for pair in tickers:
         coin = pair.replace("NGN", "")
-        # Map XBT to XBT
         map_coin = 'XBT' if coin == 'BTC' else coin
         if coin == 'XBT':
             map_coin = 'XBT'
