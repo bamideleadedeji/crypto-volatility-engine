@@ -1,14 +1,14 @@
 """
 Institutional Crypto Investment Engine (ICIE) - Autonomous Rebalancer
 Target Asset Allocation: BTC 50%, ETH 30%, SOL 20%
-Core Logic: Conservative accounting (balance + reserved), dynamic exchange-floor drift thresholds, 
-cashless two-phase rebalancing (sell overweight -> internal NGN proceeds -> buy underweight),
-and strict Luno exchange minimum base volume & fiat floor compliance gates.
+Core Logic: Delegates valuation and order execution to LunoConnector, enforces 
+dynamic exchange-floor drift thresholds, cashless two-phase rebalancing, 
+and strict Luno minimum base volume & fiat floor compliance gates.
 """
 
 import logging
 from decimal import Decimal, ROUND_DOWN
-import requests
+from execution.luno_connector import LunoConnector
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ICIERebalancer")
@@ -19,7 +19,6 @@ TARGET_WEIGHTS = {
     'SOL': Decimal('0.20')
 }
 
-BASE_DRIFT_THRESHOLD = Decimal('0.03') # Baseline 3.0% drift trigger
 MIN_FIAT_NGN = Decimal('50.00')        # Luno absolute minimum fiat order value
 
 # Luno hard exchange base volume floors per asset
@@ -29,75 +28,22 @@ MIN_BASE_VOLUMES = {
     'SOL': Decimal('0.05')
 }
 
-BASE_URL = "https://api.luno.com/api/1"
-
 class ICIERebalancer:
     def __init__(self, api_key_id: str, api_key_secret: str, dry_run: bool = True):
-        self.api_key_id = api_key_id
-        self.api_key_secret = api_key_secret
+        self.connector = LunoConnector(api_key_id, api_key_secret)
         self.dry_run = dry_run
 
     def fetch_live_portfolio(self):
         """
-        Fetches live wallet balances (balance + reserved) and real-time spot prices
-        to establish bonafide portfolio valuation matching Luno exchange reality.
+        Delegates portfolio valuation directly to LunoConnector to ensure 
+        exact balance + reserved aggregation and live spot pricing.
         """
-        balance_res = requests.get(f"{BASE_URL}/balance", auth=(self.api_key_id, self.api_key_secret), timeout=10)
-        if balance_res.status_code != 200:
-            raise Exception(f"Luno API Balance Error: {balance_res.status_code} - {balance_res.text}")
-        
-        balances = balance_res.json().get('balance', [])
-        
-        wallet_data = {}
-        for item in balances:
-            asset = item.get('asset')
-            free = Decimal(str(item.get('balance', '0')))
-            reserved = Decimal(str(item.get('reserved', '0')))
-            total_qty = free + reserved
-            if asset in ['XBT', 'ETH', 'SOL', 'NGN']:
-                wallet_data[asset] = total_qty
-
-        pairs = {
-            'XBT': 'XBTNGN',
-            'ETH': 'ETHNGN',
-            'SOL': 'SOLNGN'
-        }
-        
-        spot_prices = {}
-        for coin, pair in pairs.items():
-            t_res = requests.get(f"{BASE_URL}/ticker?pair={pair}", timeout=10)
-            if t_res.status_code == 200:
-                spot_prices[coin] = Decimal(str(t_res.json().get('last_trade', '0')))
-            else:
-                spot_prices[coin] = Decimal('0')
-
-        asset_values = {}
-        crypto_subtotal = Decimal('0')
-        for coin in ['XBT', 'ETH', 'SOL']:
-            qty = wallet_data.get(coin, Decimal('0'))
-            price = spot_prices.get(coin, Decimal('0'))
-            val = qty * price
-            asset_values[coin] = val
-            crypto_subtotal += val
-
-        ngn_reserve = wallet_data.get('NGN', Decimal('0'))
-        total_portfolio = crypto_subtotal + ngn_reserve
-
-        logger.info(f"Portfolio Valued: Total = ₦{total_portfolio:,.2f} | Crypto = ₦{crypto_subtotal:,.2f} | NGN Reserve = ₦{ngn_reserve:,.2f}")
-
-        return {
-            'total_portfolio': total_portfolio,
-            'crypto_subtotal': crypto_subtotal,
-            'ngn_reserve': ngn_reserve,
-            'wallet_quantities': wallet_data,
-            'spot_prices': spot_prices,
-            'asset_values': asset_values
-        }
+        return self.connector.get_portfolio_valuation()
 
     def evaluate_drift(self, portfolio_state):
         """
-        Evaluates actual weights against target weights (50/30/20) using dynamic 
-        exchange-floor drift thresholds to prevent sub-minimum order rejections.
+        Evaluates actual weights against target weights (50/30/20) using strict 
+        dynamic exchange-floor drift thresholds to prevent sub-minimum order rejections.
         """
         total = portfolio_state['total_portfolio']
         if total <= 0:
@@ -114,13 +60,13 @@ class ICIERebalancer:
             abs_drift = abs(drift)
 
             # Dynamic Exchange Floor Threshold Calculation:
-            # Ensure the required drift value in NGN at least clears Luno's minimum base volume floor in NGN.
+            # The required drift percentage is strictly governed by Luno's base volume floor in NGN.
             price = portfolio_state['spot_prices'].get(asset, Decimal('1'))
             min_base_vol = MIN_BASE_VOLUMES.get(asset, Decimal('0'))
             min_floor_ngn = max(MIN_FIAT_NGN, min_base_vol * price)
             
-            # Dynamic drift percentage required to clear exchange floor
-            dynamic_drift_threshold = max(BASE_DRIFT_THRESHOLD, (min_floor_ngn / total))
+            # Exact dynamic drift percentage required to clear exchange floor at current TPV
+            dynamic_drift_threshold = min_floor_ngn / total
 
             is_drifted = abs_drift >= dynamic_drift_threshold
             if is_drifted:
@@ -135,14 +81,14 @@ class ICIERebalancer:
                 'breached': is_drifted
             }
             logger.info(f"Asset {asset}: Actual Weight = {actual_weight*100:.2f}% | Target = {target_weight*100:.2f}% | "
-                        f"Drift = {drift*100:+.2f}% | Dynamic Threshold = {dynamic_drift_threshold*100:.2f}% | Breached = {is_drifted}")
+                        f"Drift = {drift*100:+.2f}% | Exchange Floor Threshold = {dynamic_drift_threshold*100:.2f}% | Breached = {is_drifted}")
 
         return drift_detected, drift_analysis
 
     def execute_rebalance(self):
         """
         Executes the two-phase cashless rebalancing protocol without adding external cash:
-        Phase 1: Liquidate overweight assets into internal NGN proceeds.
+        Phase 1: Liquidate overweight assets into internal NGN proceeds via LunoConnector.
         Phase 2: Allocate internal NGN proceeds to underweight assets.
         Strictly governed by dynamic exchange-floor compliance gates.
         """
@@ -154,7 +100,7 @@ class ICIERebalancer:
             logger.info("Portfolio drift is within dynamic exchange-floor limits. No rebalancing action required.")
             return {"status": "NO_DRIFT", "analysis": analysis}
 
-        logger.info("Dynamic drift threshold exceeded. Commencing Cashless Two-Phase Rebalance Execution...")
+        logger.info("Exchange-floor drift threshold exceeded. Commencing Cashless Two-Phase Rebalance Execution...")
         
         total = state['total_portfolio']
         overweight_actions = []
@@ -192,7 +138,7 @@ class ICIERebalancer:
             logger.info(f"[Phase 1] Liquidating Overweight {asset}: Selling qty {sell_qty} (~₦{order_val:,.2f})")
             
             if not self.dry_run:
-                res = self._post_order(pair, "SELL", sell_qty, price)
+                res = self.connector.post_order(pair, "SELL", sell_qty, price)
                 logger.info(f"Sell order response: {res}")
             
             liquidated_ngn += order_val
@@ -232,20 +178,8 @@ class ICIERebalancer:
             logger.info(f"[Phase 2] Reallocating to Underweight {asset}: Buying qty {buy_qty} using internal ₦{order_val:,.2f}")
 
             if not self.dry_run:
-                res = self._post_order(pair, "BUY", buy_qty, price)
+                res = self.connector.post_order(pair, "BUY", buy_qty, price)
                 logger.info(f"Buy order response: {res}")
 
         logger.info("ICIE Autonomous Cashless Rebalance Cycle Completed Successfully.")
         return {"status": "SUCCESS", "liquidated_ngn": float(liquidated_ngn)}
-
-    def _post_order(self, pair: str, side: str, volume: Decimal, price: Decimal):
-        """Posts order to Luno API with strict institutional error handling."""
-        endpoint = f"{BASE_URL}/postorder"
-        payload = {
-            'pair': pair,
-            'type': side,
-            'volume': str(volume),
-            'price': str(price)
-        }
-        res = requests.post(endpoint, data=payload, auth=(self.api_key_id, self.api_key_secret))
-        return res.json()
