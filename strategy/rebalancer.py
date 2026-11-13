@@ -1,9 +1,9 @@
 """
 Institutional Crypto Investment Engine (ICIE) - Autonomous Rebalancer
 Target Asset Allocation: BTC 50%, ETH 30%, SOL 20%
-Core Logic: Delegates valuation and order execution to LunoConnector, enforces 
-dynamic exchange-floor drift thresholds, cashless two-phase rebalancing, 
-and strict Luno minimum base volume & fiat floor compliance gates.
+Core Logic: Conservative accounting (balance + reserved), dynamic exchange-floor drift thresholds, 
+cashless two-phase rebalancing (sell overweight -> internal NGN proceeds -> buy underweight),
+and strict Luno exchange minimum base volume & fiat floor compliance gates.
 """
 
 import logging
@@ -32,19 +32,19 @@ class ICIERebalancer:
     def __init__(self, api_key_id: str, api_key_secret: str, dry_run: bool = True):
         self.connector = LunoConnector(api_key_id, api_key_secret)
         self.dry_run = dry_run
-        self.target_weights = TARGET_WEIGHTS  # For dashboard compatibility
+        self.target_weights = TARGET_WEIGHTS
 
     def fetch_live_portfolio(self):
         """
-        Delegates portfolio valuation directly to LunoConnector to ensure 
-        exact balance + reserved aggregation and live spot pricing.
+        Fetches live wallet balances (balance + reserved) and real-time spot prices
+        to establish bonafide portfolio valuation matching Luno exchange reality.
         """
         return self.connector.get_portfolio_valuation()
 
     def evaluate_drift(self, portfolio_state):
         """
-        Evaluates actual weights against target weights (50/30/20) using strict 
-        dynamic exchange-floor drift thresholds to prevent sub-minimum order rejections.
+        Evaluates actual weights against target weights (50/30/20) using dynamic 
+        exchange-floor drift thresholds to prevent sub-minimum order rejections.
         """
         total = portfolio_state['total_portfolio']
         if total <= 0:
@@ -60,6 +60,7 @@ class ICIERebalancer:
             drift = actual_weight - target_weight
             abs_drift = abs(drift)
 
+            # Dynamic Exchange Floor Threshold Calculation:
             price = portfolio_state['spot_prices'].get(asset, Decimal('1'))
             min_base_vol = MIN_BASE_VOLUMES.get(asset, Decimal('0'))
             min_floor_ngn = max(MIN_FIAT_NGN, min_base_vol * price)
@@ -78,12 +79,14 @@ class ICIERebalancer:
                 'dynamic_threshold': float(dynamic_drift_threshold),
                 'breached': is_drifted
             }
+            logger.info(f"Asset {asset}: Actual Weight = {actual_weight*100:.2f}% | Target = {target_weight*100:.2f}% | "
+                        f"Drift = {drift*100:+.2f}% | Dynamic Threshold = {dynamic_drift_threshold*100:.2f}% | Breached = {is_drifted}")
 
         return drift_detected, drift_analysis
 
     def evaluate_rebalance(self, holdings_val, ngn_balance, total_portfolio_val):
         """
-        Compatibility wrapper for legacy dashboard calls.
+        Compatibility wrapper for dashboard calls.
         """
         state = self.fetch_live_portfolio()
         drift_detected, analysis = self.evaluate_drift(state)
@@ -96,7 +99,10 @@ class ICIERebalancer:
 
     def execute_rebalance(self):
         """
-        Executes the two-phase cashless rebalancing protocol without adding external cash.
+        Executes the two-phase cashless rebalancing protocol without adding external cash:
+        Phase 1: Liquidate overweight assets into internal NGN proceeds.
+        Phase 2: Allocate internal NGN proceeds to underweight assets.
+        Strictly governed by dynamic exchange-floor compliance gates.
         """
         logger.info("Initializing ICIE Autonomous Cashless Rebalance Cycle...")
         state = self.fetch_live_portfolio()
@@ -106,6 +112,8 @@ class ICIERebalancer:
             logger.info("Portfolio drift is within dynamic exchange-floor limits. No rebalancing action required.")
             return {"status": "NO_DRIFT", "analysis": analysis}
 
+        logger.info("Dynamic drift threshold exceeded. Commencing Cashless Two-Phase Rebalance Execution...")
+        
         total = state['total_portfolio']
         overweight_actions = []
         underweight_actions = []
@@ -132,19 +140,25 @@ class ICIERebalancer:
             min_base_vol = MIN_BASE_VOLUMES.get(asset, Decimal('0'))
 
             if order_val < MIN_FIAT_NGN or sell_qty < min_base_vol:
+                logger.info(f"[COMPLIANCE_GATE] Sell order for {asset} below Luno minimums. Skipping.")
                 continue
 
             pair = f"{asset}NGN"
+            logger.info(f"[Phase 1] Liquidating Overweight {asset}: Selling qty {sell_qty} (~₦{order_val:,.2f})")
+            
             if not self.dry_run:
-                self.connector.post_order(pair, "SELL", sell_qty, price)
+                res = self.connector.post_order(pair, "SELL", sell_qty, price)
+                logger.info(f"Sell order response: {res}")
             
             liquidated_ngn += order_val
 
         if liquidated_ngn <= 0:
+            logger.info("[SETTLEMENT_GATE] No valid liquidations met Luno minimums. Halting cycle.")
             return {"status": "SKIPPED_MIN_VOLUME", "liquidated_ngn": 0.0}
 
         total_deficit = sum([item['deficit_val'] for item in underweight_actions])
         if total_deficit <= 0:
+            logger.info("No underweight assets to fund.")
             return {"status": "SUCCESS_PHASE1_ONLY", "liquidated_ngn": float(liquidated_ngn)}
 
         for item in underweight_actions:
@@ -163,13 +177,18 @@ class ICIERebalancer:
             min_base_vol = MIN_BASE_VOLUMES.get(asset, Decimal('0'))
 
             if order_val < MIN_FIAT_NGN or buy_qty < min_base_vol:
+                logger.info(f"[COMPLIANCE_GATE] Buy order for {asset} below Luno minimums. Skipping.")
                 continue
 
             pair = f"{asset}NGN"
-            if not self.dry_run:
-                self.connector.post_order(pair, "BUY", buy_qty, price)
+            logger.info(f"[Phase 2] Reallocating to Underweight {asset}: Buying qty {buy_qty} using internal ₦{order_val:,.2f}")
 
+            if not self.dry_run:
+                res = self.connector.post_order(pair, "BUY", buy_qty, price)
+                logger.info(f"Buy order response: {res}")
+
+        logger.info("ICIE Autonomous Cashless Rebalance Cycle Completed Successfully.")
         return {"status": "SUCCESS", "liquidated_ngn": float(liquidated_ngn)}
 
-# Explicit Alias to prevent any legacy vs new import naming mismatches
+# Export alias for backward compatibility
 AutonomousRebalancer = ICIERebalancer
