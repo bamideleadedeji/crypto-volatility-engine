@@ -23,23 +23,21 @@ TARGET_WEIGHTS = {
     'SOL': Decimal('0.20')
 }
 
-MIN_FIAT_NGN = Decimal('50.00')  # Luno absolute minimum fiat order value
+MIN_FIAT_NGN = Decimal('50.00')
 
-# Luno hard exchange base volume floors per asset
 MIN_BASE_VOLUMES = {
     'XBT': Decimal('0.000025'),
     'ETH': Decimal('0.001'),
     'SOL': Decimal('0.05')
 }
 
-# Asset-specific decimal precision increments matching Luno exchange specs
 PAIR_PRECISION = {
     'XBT': Decimal('0.00000001'),
     'ETH': Decimal('0.000001'),
     'SOL': Decimal('0.01')
 }
 
-LUNO_TAKER_FEE = Decimal('0.0075')  # 0.75% taker fee
+LUNO_TAKER_FEE = Decimal('0.0075')
 
 class ICIERebalancer:
     """
@@ -53,10 +51,6 @@ class ICIERebalancer:
         self.target_weights = TARGET_WEIGHTS
 
     def fetch_live_portfolio(self):
-        """
-        Fetches live wallet balances (balance + reserved) and real-time spot prices
-        with robust exception handling to prevent API timeouts from killing the engine.
-        """
         try:
             return self.connector.get_portfolio_valuation()
         except Exception as e:
@@ -72,10 +66,6 @@ class ICIERebalancer:
             raise
 
     def evaluate_drift(self, portfolio_state):
-        """
-        Evaluates actual weights against target weights (50/30/20) using dynamic 
-        exchange-floor drift thresholds maintained in high-precision Decimal.
-        """
         total = portfolio_state.get('total_portfolio', Decimal('0'))
         if total <= 0:
             logger.warning("Portfolio total capital is zero or negative. Halting rebalance.")
@@ -108,15 +98,10 @@ class ICIERebalancer:
                 'dynamic_threshold': float(dynamic_drift_threshold),
                 'breached': is_drifted
             }
-            logger.info(f"Asset {asset}: Actual Weight = {actual_weight*100:.2f}% | Target = {target_weight*100:.2f}% | "
-                        f"Drift = {drift*100:+.2f}% | Dynamic Threshold = {dynamic_drift_threshold*100:.2f}% | Breached = {is_drifted}")
 
         return drift_detected, drift_analysis
 
     def evaluate_rebalance(self, holdings_val=None, ngn_balance=None, total_portfolio_val=None):
-        """
-        Compatibility wrapper for legacy dashboard calls, invoking live evaluation.
-        """
         try:
             state = self.fetch_live_portfolio()
             drift_detected, analysis = self.evaluate_drift(state)
@@ -131,13 +116,6 @@ class ICIERebalancer:
             return {"rebalance_triggered": False, "max_drift_percentage": 0.0, "analysis": {}}
 
     def execute_rebalance(self):
-        """
-        Executes institutional two-phase cashless rebalancing with rigorous production safeguards:
-        1. Phase 1: Liquidate overweight assets (fee-adjusted for 0.75% taker fee with execution verification).
-        2. Mandatory post-sell wallet refresh to obtain true verified NGN reserve (`ngn_reserve`).
-        3. Phase 2: Allocate available verified NGN reserve proportionally to underweight assets.
-        4. Final post-rebalance portfolio verification audit.
-        """
         logger.info("Initializing ICIE Institutional Cashless Rebalance Cycle...")
         
         try:
@@ -168,9 +146,6 @@ class ICIERebalancer:
             elif diff < 0:
                 underweight_actions.append({'asset': asset, 'deficit_val': abs(diff)})
 
-        # -------------------------------------------------------------
-        # PHASE 1: Liquidation Leg (Sell Overweight into NGN)
-        # -------------------------------------------------------------
         executed_sells = 0
         for item in overweight_actions:
             asset = item['asset']
@@ -252,9 +227,6 @@ class ICIERebalancer:
             logger.info("[SETTLEMENT_GATE] No valid sell orders successfully filled. Halting cashless cycle.")
             return {"status": "SKIPPED_EXECUTION_FAILURE", "executed_sells": 0}
 
-        # -------------------------------------------------------------
-        # MANDATORY PORTFOLIO REFRESH (Post-Sell State Sync)
-        # -------------------------------------------------------------
         logger.info("[SETTLEMENT_SYNC] Refreshing live wallet balances post-liquidation...")
         try:
             refreshed_state = self.fetch_live_portfolio()
@@ -280,9 +252,6 @@ class ICIERebalancer:
             )
             return {"status": "POST_SELL_REFRESH_FAILED", "error": str(e)}
 
-        # -------------------------------------------------------------
-        # PHASE 2: Reallocation Leg (Buy Underweight using Verified NGN)
-        # -------------------------------------------------------------
         total_deficit = sum([item['deficit_val'] for item in underweight_actions])
         if total_deficit <= 0 or available_ngn <= 0:
             logger.info("No underweight assets to fund or zero verified NGN reserve available.")
@@ -366,9 +335,6 @@ class ICIERebalancer:
                         status=f"BUY_EXCEPTION: {str(ex)}"
                     )
 
-        # -------------------------------------------------------------
-        # FINAL POST-REBALANCE STATE VERIFICATION AUDIT
-        # -------------------------------------------------------------
         logger.info("[FINAL_AUDIT] Performing post-rebalance drift verification check...")
         try:
             final_state = self.fetch_live_portfolio()
@@ -393,5 +359,4 @@ class ICIERebalancer:
             "final_max_drift": float(max_final_drift) if 'max_final_drift' in locals() else 0.0
         }
 
-# Backward compatibility alias for dashboard imports
 AutonomousRebalancer = ICIERebalancer
