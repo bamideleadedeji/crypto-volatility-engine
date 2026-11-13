@@ -140,7 +140,6 @@ class ICIERebalancer:
             order_val = sell_qty * price
             min_base_vol = MIN_BASE_VOLUMES.get(asset, Decimal('0'))
 
-            # Compliance Gate: Check Fiat Floor and Hard Base Volume Floor
             if order_val < MIN_FIAT_NGN or sell_qty < min_base_vol:
                 logger.info(f"[COMPLIANCE_GATE] Sell order for {asset} (Qty: {sell_qty}, Val: ₦{order_val:,.2f}) "
                             f"is below Luno minimums. Skipping sell leg.")
@@ -196,5 +195,5 @@ class ICIERebalancer:
         logger.info("ICIE Autonomous Cashless Rebalance Cycle Completed Successfully.")
         return {"status": "SUCCESS", "liquidated_ngn": float(liquidated_ngn)}
 
-# Export both class names to ensure 100% import compatibility across all modules
+# Explicit Aliases for 100% import compatibility
 AutonomousRebalancer = ICIERebalancer
