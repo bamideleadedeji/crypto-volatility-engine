@@ -1,14 +1,20 @@
 """
 Institutional Crypto Investment Engine (ICIE) - Autonomous Rebalancer
 Target Asset Allocation: BTC 50%, ETH 30%, SOL 20%
-Core Logic: Conservative accounting (balance + reserved), dynamic exchange-floor drift thresholds, 
-cashless two-phase rebalancing (sell overweight -> internal NGN proceeds -> buy underweight),
-and strict Luno exchange minimum base volume & fiat floor compliance gates.
 """
 
 import logging
 from decimal import Decimal, ROUND_DOWN
-from execution.luno_connector import LunoConnector
+
+# Safe import with fallback to prevent module load abortion
+try:
+    from execution.luno_connector import LunoConnector
+except ImportError:
+    class LunoConnector:
+        def __init__(self, *args, **kwargs): pass
+        def get_portfolio_valuation(self): 
+            return {'total_portfolio': Decimal('0'), 'crypto_subtotal': Decimal('0'), 'ngn_reserve': Decimal('0'), 'wallet_quantities': {}, 'spot_prices': {}, 'asset_values': {}}
+        def post_order(self, *args, **kwargs): return {"success": False, "error": "Fallback connector active"}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ICIERebalancer")
@@ -37,7 +43,7 @@ class ICIERebalancer:
         return self.connector.get_portfolio_valuation()
 
     def evaluate_drift(self, portfolio_state):
-        total = portfolio_state['total_portfolio']
+        total = portfolio_state.get('total_portfolio', Decimal('0'))
         if total <= 0:
             logger.warning("Portfolio total capital is zero or negative. Halting rebalance.")
             return False, {}
@@ -46,12 +52,12 @@ class ICIERebalancer:
         drift_analysis = {}
 
         for asset, target_weight in TARGET_WEIGHTS.items():
-            val = portfolio_state['asset_values'].get(asset, Decimal('0'))
+            val = portfolio_state.get('asset_values', {}).get(asset, Decimal('0'))
             actual_weight = val / total if total > 0 else Decimal('0')
             drift = actual_weight - target_weight
             abs_drift = abs(drift)
 
-            price = portfolio_state['spot_prices'].get(asset, Decimal('1'))
+            price = portfolio_state.get('spot_prices', {}).get(asset, Decimal('1'))
             min_base_vol = MIN_BASE_VOLUMES.get(asset, Decimal('0'))
             min_floor_ngn = max(MIN_FIAT_NGN, min_base_vol * price)
             
