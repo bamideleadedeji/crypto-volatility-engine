@@ -39,9 +39,13 @@ PAIR_PRECISION = {
     'SOL': Decimal('0.01')
 }
 
-LUNO_TAKER_FEE = Decimal('0.0075')  # 0.75% fee
+LUNO_TAKER_FEE = Decimal('0.0075')  # 0.75% taker fee
 
 class ICIERebalancer:
+    """
+    Autonomous Institutional Rebalancer implementing two-phase cashless rebalancing,
+    dynamic exchange-floor drift thresholds, and rigorous audit compliance.
+    """
     def __init__(self, connector, order_executor, dry_run: bool = True):
         self.connector = connector
         self.order_executor = order_executor
@@ -104,12 +108,14 @@ class ICIERebalancer:
                 'dynamic_threshold': float(dynamic_drift_threshold),
                 'breached': is_drifted
             }
+            logger.info(f"Asset {asset}: Actual Weight = {actual_weight*100:.2f}% | Target = {target_weight*100:.2f}% | "
+                        f"Drift = {drift*100:+.2f}% | Dynamic Threshold = {dynamic_drift_threshold*100:.2f}% | Breached = {is_drifted}")
 
         return drift_detected, drift_analysis
 
     def evaluate_rebalance(self, holdings_val=None, ngn_balance=None, total_portfolio_val=None):
         """
-        Compatibility wrapper for dashboard calls.
+        Compatibility wrapper for legacy dashboard calls, invoking live evaluation.
         """
         try:
             state = self.fetch_live_portfolio()
@@ -127,7 +133,7 @@ class ICIERebalancer:
     def execute_rebalance(self):
         """
         Executes institutional two-phase cashless rebalancing with rigorous production safeguards:
-        1. Phase 1: Liquidate overweight assets (fee-adjusted for 0.75% taker fee with execution status verification).
+        1. Phase 1: Liquidate overweight assets (fee-adjusted for 0.75% taker fee with execution verification).
         2. Mandatory post-sell wallet refresh to obtain true verified NGN reserve (`ngn_reserve`).
         3. Phase 2: Allocate available verified NGN reserve proportionally to underweight assets.
         4. Final post-rebalance portfolio verification audit.
