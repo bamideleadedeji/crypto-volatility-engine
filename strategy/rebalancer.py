@@ -57,7 +57,14 @@ class ICIERebalancer:
             return self.connector.get_portfolio_valuation()
         except Exception as e:
             logger.error(f"CRITICAL: Failed to fetch live portfolio valuation: {e}")
-            log_audit(venue="ICIE", asset="SYSTEM", price=0.0, amount=0.0, units="N/A", status=f"Portfolio fetch failed: {str(e)}")
+            log_audit(
+                venue="ICIE",
+                asset="SYSTEM",
+                price=0.0,
+                amount=0.0,
+                units="N/A",
+                status=f"Portfolio valuation fetch failed: {str(e)}"
+            )
             raise
 
     def evaluate_drift(self, portfolio_state):
@@ -171,7 +178,14 @@ class ICIERebalancer:
 
             if order_val < MIN_FIAT_NGN or sell_qty < min_base_vol:
                 logger.info(f"[COMPLIANCE_GATE] Sell order for {asset} below Luno minimums. Skipping.")
-                log_audit(venue="ICIE", asset=asset, price=float(price), amount=float(order_val), units="SKIPPED", status="BELOW_MIN_LIMIT")
+                log_audit(
+                    venue="ICIE",
+                    asset=asset,
+                    price=float(price),
+                    amount=float(order_val),
+                    units="SKIPPED",
+                    status=f"Sell {asset} skipped: below exchange minimum floors."
+                )
                 continue
 
             pair = f"{asset}NGN"
@@ -180,7 +194,14 @@ class ICIERebalancer:
             if self.dry_run or not self.order_executor:
                 logger.info(f"[DRY RUN] Would execute SELL market order for {pair} (Notional: ₦{order_val})")
                 executed_sells += 1
-                log_audit(venue="ICIE", asset=pair, price=float(price), amount=float(order_val), units=str(sell_qty), status="DRY_RUN_SELL")
+                log_audit(
+                    venue="ICIE",
+                    asset=pair,
+                    price=float(price),
+                    amount=float(order_val),
+                    units=str(sell_qty),
+                    status="DRY_RUN_SELL"
+                )
             else:
                 try:
                     res = self.order_executor.execute_market_order(
@@ -191,14 +212,35 @@ class ICIERebalancer:
                     )
                     if res.get("status") in ["SUCCESS", "PENDING"] or res.get("success") or res.get("order_id"):
                         executed_sells += 1
-                        log_audit(venue="LUNO", asset=pair, price=float(price), amount=float(order_val), units=str(sell_qty), status="SUCCESS")
+                        log_audit(
+                            venue="LUNO",
+                            asset=pair,
+                            price=float(price),
+                            amount=float(order_val),
+                            units=str(sell_qty),
+                            status="SUCCESS"
+                        )
                         logger.info(f"Order fill confirmed for {pair} SELL: {res.get('order_id', 'Simulated')}")
                     else:
                         logger.error(f"Order executor failed SELL fill confirmation for {pair}: {res}")
-                        log_audit(venue="LUNO", asset=pair, price=float(price), amount=float(order_val), units=str(sell_qty), status="FAILED")
+                        log_audit(
+                            venue="LUNO",
+                            asset=pair,
+                            price=float(price),
+                            amount=float(order_val),
+                            units=str(sell_qty),
+                            status=f"SELL_FAILED: {res}"
+                        )
                 except Exception as ex:
                     logger.error(f"Exception during SELL execution for {pair}: {ex}")
-                    log_audit(venue="LUNO", asset=pair, price=float(price), amount=float(order_val), units=str(sell_qty), status="EXCEPTION")
+                    log_audit(
+                        venue="LUNO",
+                        asset=pair,
+                        price=float(price),
+                        amount=float(order_val),
+                        units=str(sell_qty),
+                        status=f"SELL_EXCEPTION: {str(ex)}"
+                    )
 
         if executed_sells <= 0 and not self.dry_run:
             logger.info("[SETTLEMENT_GATE] No valid sell orders successfully filled. Halting cashless cycle.")
@@ -212,10 +254,24 @@ class ICIERebalancer:
             refreshed_state = self.fetch_live_portfolio()
             available_ngn = refreshed_state.get('ngn_reserve', Decimal('0'))
             logger.info(f"[SETTLEMENT_SYNC] Verified available NGN reserve post-liquidation: ₦{available_ngn:,.2f}")
-            log_audit(venue="ICIE", asset="SYSTEM", price=0.0, amount=float(available_ngn), units="NGN", status="WALLET_REFRESH_SUCCESS")
+            log_audit(
+                venue="ICIE",
+                asset="SYSTEM",
+                price=0.0,
+                amount=float(available_ngn),
+                units="NGN",
+                status="WALLET_REFRESH_SUCCESS"
+            )
         except Exception as e:
             logger.error(f"CRITICAL: Failed to refresh wallet state post-sell: {e}")
-            log_audit(venue="ICIE", asset="SYSTEM", price=0.0, amount=0.0, units="N/A", status=f"WALLET_REFRESH_FAILED: {str(e)}")
+            log_audit(
+                venue="ICIE",
+                asset="SYSTEM",
+                price=0.0,
+                amount=0.0,
+                units="N/A",
+                status=f"WALLET_REFRESH_FAILED: {str(e)}"
+            )
             return {"status": "POST_SELL_REFRESH_FAILED", "error": str(e)}
 
         # -------------------------------------------------------------
@@ -256,7 +312,14 @@ class ICIERebalancer:
             if self.dry_run or not self.order_executor:
                 logger.info(f"[DRY RUN] Would execute BUY market order for {pair} (Counter NGN: ₦{order_val})")
                 executed_buys += 1
-                log_audit(venue="ICIE", asset=pair, price=float(price), amount=float(order_val), units=str(buy_qty), status="DRY_RUN_BUY")
+                log_audit(
+                    venue="ICIE",
+                    asset=pair,
+                    price=float(price),
+                    amount=float(order_val),
+                    units=str(buy_qty),
+                    status="DRY_RUN_BUY"
+                )
             else:
                 try:
                     res = self.order_executor.execute_market_order(
@@ -267,14 +330,35 @@ class ICIERebalancer:
                     )
                     if res.get("status") in ["SUCCESS", "PENDING"] or res.get("success") or res.get("order_id"):
                         executed_buys += 1
-                        log_audit(venue="LUNO", asset=pair, price=float(price), amount=float(order_val), units=str(buy_qty), status="SUCCESS")
+                        log_audit(
+                            venue="LUNO",
+                            asset=pair,
+                            price=float(price),
+                            amount=float(order_val),
+                            units=str(buy_qty),
+                            status="SUCCESS"
+                        )
                         logger.info(f"Order fill confirmed for {pair} BUY: {res.get('order_id', 'Simulated')}")
                     else:
                         logger.error(f"Order executor failed BUY fill confirmation for {pair}: {res}")
-                        log_audit(venue="LUNO", asset=pair, price=float(price), amount=float(order_val), units=str(buy_qty), status="FAILED")
+                        log_audit(
+                            venue="LUNO",
+                            asset=pair,
+                            price=float(price),
+                            amount=float(order_val),
+                            units=str(buy_qty),
+                            status=f"BUY_FAILED: {res}"
+                        )
                 except Exception as ex:
                     logger.error(f"Exception during BUY execution for {pair}: {ex}")
-                    log_audit(venue="LUNO", asset=pair, price=float(price), amount=float(order_val), units=str(buy_qty), status="EXCEPTION")
+                    log_audit(
+                        venue="LUNO",
+                        asset=pair,
+                        price=float(price),
+                        amount=float(order_val),
+                        units=str(buy_qty),
+                        status=f"BUY_EXCEPTION: {str(ex)}"
+                    )
 
         # -------------------------------------------------------------
         # FINAL POST-REBALANCE STATE VERIFICATION AUDIT
@@ -285,7 +369,14 @@ class ICIERebalancer:
             _, final_analysis = self.evaluate_drift(final_state)
             max_final_drift = max([abs(d.get('drift', 0)) for d in final_analysis.values()]) if final_analysis else 0.0
             logger.info(f"[FINAL_AUDIT] Rebalance cycle completed. Maximum post-rebalance asset drift: {max_final_drift*100:.2f}%")
-            log_audit(venue="ICIE", asset="SYSTEM", price=0.0, amount=float(max_final_drift), units="DRIFT_PCT", status="REBALANCE_COMPLETE")
+            log_audit(
+                venue="ICIE",
+                asset="PORTFOLIO",
+                price=0.0,
+                amount=0.0,
+                units="N/A",
+                status=f"COMPLETE: Final max drift {max_final_drift*100:.2f}%"
+            )
         except Exception as audit_err:
             logger.warning(f"Final post-rebalance audit check encountered an error: {audit_err}")
 
