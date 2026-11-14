@@ -265,9 +265,7 @@ if app_mode == "Portfolio & Rebalancing Execution":
     for pair in tickers:
         coin = pair.replace("NGN", "")
         map_coin = 'XBT' if coin == 'BTC' else coin
-        if coin == 'XBT':
-            map_coin = 'XBT'
-        elif coin == 'BTC':
+        if coin == 'BTC':
             map_coin = 'XBT'
             
         data = drift_analysis.get(map_coin, {})
@@ -290,7 +288,7 @@ if app_mode == "Portfolio & Rebalancing Execution":
         })
     
     breakdown_df = pd.DataFrame(breakdown_data)
-    st.dataframe(breakdown_df, use_container_width=True)
+    st.dataframe(breakdown_df, width="stretch")
 
     col_chart1, col_chart2 = st.columns(2)
     with col_chart1:
@@ -301,7 +299,7 @@ if app_mode == "Portfolio & Rebalancing Execution":
             title="Actual Portfolio Allocation",
             hole=0.4
         )
-        st.plotly_chart(fig_actual, use_container_width=True)
+        st.plotly_chart(fig_actual, width="stretch")
         
     with col_chart2:
         fig_target = px.bar(
@@ -311,14 +309,14 @@ if app_mode == "Portfolio & Rebalancing Execution":
             barmode="group",
             title="Current vs. Target Weight Comparison (%)"
         )
-        st.plotly_chart(fig_target, use_container_width=True)
+        st.plotly_chart(fig_target, width="stretch")
 
     max_drift = max([abs(d.get('drift', 0)) for d in drift_analysis.values()]) if drift_analysis else 0.0
     st.info(f"📊 **Max Absolute Drift:** {max_drift*100:.2f}% | **Engine Status:** {'Drift Exceeded (Ready for Settlement)' if drift_detected else 'Within Exchange-Floor Tolerances'}")
 
     col_btn1, col_btn2 = st.columns(2)
     with col_btn1:
-        if st.button("🚀 Execute Autonomous Closed-Loop Rebalance", use_container_width=True):
+        if st.button("🚀 Execute Autonomous Closed-Loop Rebalance", width="stretch"):
             try:
                 if not drift_detected:
                     st.info("⏸️ Rebalance skipped: Portfolio drift is within dynamic exchange-floor limits. No action required.")
@@ -367,7 +365,7 @@ elif app_mode == "GARCH Volatility & VaR Suite":
     with col_g2:
         confidence_level = st.selectbox("VaR Confidence Level", [0.95, 0.975, 0.99], index=0)
 
-    if st.button("📈 Run Econometric Estimation & Covariance Shrinkage", use_container_width=True):
+    if st.button("📈 Run Econometric Estimation & Covariance Shrinkage", width="stretch"):
         with st.spinner("Computing GARCH(1,1) volatility models and historical VaR..."):
             np.random.seed(42)
             dates = pd.date_range(end=pd.Timestamp.today(), periods=lookback_days)
@@ -388,7 +386,7 @@ elif app_mode == "GARCH Volatility & VaR Suite":
 elif app_mode == "Backtest Simulation Engine":
     st.subheader("Institutional Backtest Simulation Engine")
     bt_capital = st.number_input("Initial Backtest Capital (₦)", value=10_000_000.0, step=1_000_000.0)
-    if st.button("🚀 Run Backtest Simulation vs Buy & Hold", use_container_width=True):
+    if st.button("🚀 Run Backtest Simulation vs Buy & Hold", width="stretch"):
         with st.spinner("Running historical backtest simulation..."):
             st.success("✅ Backtest Simulation Complete.")
             bt_days = 90
@@ -408,13 +406,13 @@ elif app_mode == "Market Regime & Attribution":
         {"Month": "2026-10", "Total Return (%)": "+7.5%", "BTC Contribution": "+3.5%", "ETH Contribution": "+2.9%", "SOL Contribution": "+1.1%"},
         {"Month": "2026-11 (TD)", "Total Return (%)": "-2.1%", "BTC Contribution": "-0.9%", "ETH Contribution": "-0.8%", "SOL Contribution": "-0.4%"},
     ])
-    st.dataframe(attr_data, use_container_width=True)
+    st.dataframe(attr_data, width="stretch")
 
 elif app_mode == "SQLite Audit Ledger":
     st.subheader("📜 SQLite WAL Audit Ledger & Event History")
     audit_df = fetch_audit_ledger(100)
     if not audit_df.empty:
-        st.dataframe(audit_df, use_container_width=True)
+        st.dataframe(audit_df, width="stretch")
     else:
         st.info("No audit logs recorded in SQLite WAL database yet. Reviewing local `institutional_audit.log` instead:")
         if os.path.exists("institutional_audit.log"):
