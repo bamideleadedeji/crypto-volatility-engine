@@ -147,74 +147,44 @@ def safe_execute_market_order(executor, pair: str, side: str, notional_ngn: floa
     }
 
 @st.cache_data(ttl=5, show_spinner=False)
-def fetch_luno_market_data_atomic(_connector, tickers):
+def fetch_live_portfolio_valuation(_connector):
     """
-    Atomic live fetcher: Pulls exact unadjusted exchange tickers and wallet balances 
-    with zero hardcoded fallback simulation data.
+    Atomic live fetcher: Calls LunoConnector.get_portfolio_valuation() directly
+    to guarantee zero asset omission and exact parity with the Luno mobile app.
     """
-    prices = {}
-    balances = []
-    
     if not _connector:
         raise RuntimeError("CRITICAL: Luno Connector uninitialized. Live credentials required.")
+    return _connector.get_portfolio_valuation()
 
-    for pair in tickers:
-        try:
-            coin = pair.replace("NGN", "")
-            spot_dict = _connector.get_spot_prices()
-            prices[pair] = float(spot_dict.get(coin, 0.0))
-        except Exception as e:
-            logger.error(f"Failed to fetch live ticker for {pair}: {e}")
-            prices[pair] = 0.0
+# Fetch live portfolio state
+try:
+    portfolio_state = fetch_live_portfolio_valuation(connector) if connector else {
+        'total_portfolio': Decimal('0'),
+        'crypto_subtotal': Decimal('0'),
+        'ngn_reserve': Decimal('0'),
+        'wallet_quantities': {'XBT': Decimal('0'), 'ETH': Decimal('0'), 'SOL': Decimal('0'), 'NGN': Decimal('0')},
+        'spot_prices': {'XBT': Decimal('0'), 'ETH': Decimal('0'), 'SOL': Decimal('0')},
+        'asset_values': {'XBT': Decimal('0'), 'ETH': Decimal('0'), 'SOL': Decimal('0')}
+    }
+except Exception as e:
+    st.error(f"🚨 Failed to connect to Luno API: {e}")
+    portfolio_state = {
+        'total_portfolio': Decimal('0'),
+        'crypto_subtotal': Decimal('0'),
+        'ngn_reserve': Decimal('0'),
+        'wallet_quantities': {},
+        'spot_prices': {},
+        'asset_values': {}
+    }
 
-    try:
-        raw_balances = _connector.get_balances()
-        if isinstance(raw_balances, dict):
-            balances = [{"asset": k, "balance": str(v), "reserved": "0.0"} for k, v in raw_balances.items()]
-        elif isinstance(raw_balances, list):
-            balances = raw_balances
-    except Exception as e:
-        logger.error(f"Failed to fetch live balances from Luno API: {e}")
-        balances = []
-
-    return prices, balances
+total_portfolio_val = float(portfolio_state.get('total_portfolio', Decimal('0')))
+total_crypto_val = float(portfolio_state.get('crypto_subtotal', Decimal('0')))
+ngn_balance = portfolio_state.get('ngn_reserve', Decimal('0'))
+balances = portfolio_state.get('wallet_quantities', {})
+prices = portfolio_state.get('spot_prices', {})
+asset_vals = portfolio_state.get('asset_values', {})
 
 tickers = ["XBTNGN", "ETHNGN", "SOLNGN"]
-prices, balances = fetch_luno_market_data_atomic(connector, tickers)
-
-# Strict accounting aggregation summing balance + reserved wallets
-ngn_balance = Decimal("0.0")
-btc_balance = Decimal("0.0")
-eth_balance = Decimal("0.0")
-sol_balance = Decimal("0.0")
-
-for b in balances:
-    asset = b.get("asset") if isinstance(b, dict) else None
-    try:
-        balance_val = Decimal(str(b.get("balance", "0.0")))
-        reserved_val = Decimal(str(b.get("reserved", "0.0")))
-        total_asset_amount = balance_val + reserved_val
-    except Exception:
-        total_asset_amount = Decimal("0.0")
-        
-    if asset == "NGN":
-        ngn_balance += total_asset_amount
-    elif asset in ["XBT", "BTC"]:
-        btc_balance += total_asset_amount
-    elif asset == "ETH":
-        eth_balance += total_asset_amount
-    elif asset == "SOL":
-        sol_balance += total_asset_amount
-
-holdings_units = {
-    "XBTNGN": float(btc_balance), 
-    "ETHNGN": float(eth_balance), 
-    "SOLNGN": float(sol_balance)
-}
-
-holdings_val = {pair: holdings_units[pair] * prices.get(pair, 0.0) for pair in tickers}
-total_crypto_val = sum(holdings_val.values())
-total_portfolio_val = float(ngn_balance) + total_crypto_val
 
 # Sidebar Navigation & Controls
 app_mode = st.sidebar.radio(
@@ -232,12 +202,12 @@ if st.sidebar.button("🔄 Clear Cache & Refresh Feed"):
     st.cache_data.clear()
     st.rerun()
 
-# Top Metrics Banner
+# Top Metrics Banner (Directly reflecting Luno App valuation)
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Total Portfolio Capital", f"₦{total_portfolio_val:,.2f}")
 m2.metric("Liquid NGN Reserve", f"₦{float(ngn_balance):,.2f}")
-m3.metric("XBTNGN Spot Price", f"₦{prices.get('XBTNGN', 0.0):,.2f}")
-m4.metric("ETHNGN Spot Price", f"₦{prices.get('ETHNGN', 0.0):,.2f}")
+m3.metric("XBTNGN Spot Price", f"₦{float(prices.get('XBT', 0.0)):,.2f}")
+m4.metric("ETHNGN Spot Price", f"₦{float(prices.get('ETH', 0.0)):,.2f}")
 
 st.divider()
 
@@ -250,40 +220,29 @@ if app_mode == "Portfolio & Rebalancing Execution":
 
     st.markdown("### Current Asset Breakdown & Dynamic Exchange-Floor Telemetry")
     
-    portfolio_state_dict = {
-        'total_portfolio': Decimal(str(total_portfolio_val)),
-        'crypto_subtotal': Decimal(str(total_crypto_val)),
-        'ngn_reserve': ngn_balance,
-        'wallet_quantities': {'XBT': btc_balance, 'ETH': eth_balance, 'SOL': sol_balance, 'NGN': ngn_balance},
-        'spot_prices': {'XBT': Decimal(str(prices.get('XBTNGN', 0))), 'ETH': Decimal(str(prices.get('ETHNGN', 0))), 'SOL': Decimal(str(prices.get('SOLNGN', 0)))},
-        'asset_values': {'XBT': Decimal(str(holdings_val['XBTNGN'])), 'ETH': Decimal(str(holdings_val['ETHNGN'])), 'SOL': Decimal(str(holdings_val['SOLNGN']))}
-    }
-    
-    drift_detected, drift_analysis = rebalancer.evaluate_drift(portfolio_state_dict)
+    drift_detected, drift_analysis = rebalancer.evaluate_drift(portfolio_state)
 
     breakdown_data = []
-    for pair in tickers:
-        coin = pair.replace("NGN", "")
-        map_coin = 'XBT' if coin == 'BTC' else coin
-        if coin == 'BTC':
-            map_coin = 'XBT'
-            
-        data = drift_analysis.get(map_coin, {})
-        val = holdings_val[pair]
+    pair_map = {'XBT': 'XBTNGN', 'ETH': 'ETHNGN', 'SOL': 'SOLNGN'}
+    
+    for coin, pair in pair_map.items():
+        data = drift_analysis.get(coin, {})
+        val = float(asset_vals.get(coin, Decimal('0')))
+        units = float(balances.get(coin, Decimal('0')))
         curr_w = (val / total_portfolio_val * 100) if total_portfolio_val > 0 else 0.0
-        target_w = float(TARGET_WEIGHTS.get(map_coin, Decimal('0')) * 100)
+        target_w = float(TARGET_WEIGHTS.get(coin, Decimal('0')) * 100)
         dyn_thresh = float(data.get('dynamic_threshold', 0.05) * 100)
-        min_base = float(MIN_BASE_VOLUMES.get(map_coin, 0.0))
+        min_base = float(MIN_BASE_VOLUMES.get(coin, 0.0))
         
         breakdown_data.append({
             "Asset Pair": pair,
-            "Units": holdings_units[pair],
+            "Units": units,
             "Market Value (₦)": val,
             "Current Weight (%)": curr_w,
             "Target Weight (%)": target_w,
             "Drift (%)": curr_w - target_w,
             "Dynamic Threshold (%)": dyn_thresh,
-            "Base Floor": f"{min_base} {map_coin}",
+            "Base Floor": f"{min_base} {coin}",
             "Compliance Status": "🚨 Actionable Breach" if data.get('breached') else "✅ Within Tolerance"
         })
     
@@ -352,7 +311,7 @@ if app_mode == "Portfolio & Rebalancing Execution":
             manual_side = st.selectbox("Side", ["BUY", "SELL"])
             manual_notional = st.number_input("Notional Amount (₦)", min_value=50.0, value=1000.0, step=100.0)
             if st.button("Submit Test Order"):
-                cur_p = prices.get(manual_pair, 0.0)
+                cur_p = float(prices.get(manual_pair.replace("NGN", ""), 0.0))
                 res = safe_execute_market_order(order_executor, manual_pair, manual_side, manual_notional, cur_p)
                 st.json(res)
 
