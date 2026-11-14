@@ -2,12 +2,12 @@
 Institutional Crypto Investment Engine (ICIE) - Autonomous Rebalancer
 Target Asset Allocation: BTC 50%, ETH 30%, SOL 20%
 Core Architecture: 
-- Routed via InstitutionalOrderExecutor (idempotency, circuit breakers, retry logic)
-- Fee-aware liquidation calculation (0.75% Luno taker fee adjustment)
-- Two-phase cashless rebalancing with mandatory wallet refresh between Phase 1 and Phase 2
-- Asset-specific decimal precision increments (BTC 8 dec, ETH 6 dec, SOL 2 dec)
-- Execution status verification and final post-rebalance state audit
-- SQLite WAL audit logging integration
+- Zero top-level cross-module imports to eliminate circular import traps.
+- Routed via InstitutionalOrderExecutor (idempotency, circuit breakers, retry logic).
+- Fee-aware liquidation calculation (0.75% Luno taker fee adjustment).
+- Two-phase cashless rebalancing with mandatory wallet refresh between Phase 1 and Phase 2.
+- Asset-specific decimal precision increments (BTC 8 dec, ETH 6 dec, SOL 2 dec).
+- SQLite WAL audit logging integration via lazy local import.
 """
 
 import logging
@@ -39,20 +39,23 @@ PAIR_PRECISION = {
 LUNO_TAKER_FEE = Decimal('0.0075')  # 0.75% taker fee
 
 # ---------------------------------------------------------------------------
-# 2. LOGGING & REPOSITORY INITIALIZATION
+# 2. LOGGING SETUP
 # ---------------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ICIERebalancer")
 
-try:
-    from database.repository import log_audit
-except ImportError:
-    def log_audit(venue: str, asset: str, price: float, amount: float, units: str, status: str):
-        logger.info(f"Fallback Audit -> {venue} | {asset} | {status} | Amount: ₦{amount:,.2f}")
+
+def _safe_log_audit(venue: str, asset: str, price: float, amount: float, units: str, status: str):
+    """Lazy importer for database audit logging to prevent circular import side effects."""
+    try:
+        from database.repository import log_audit
+        log_audit(venue, asset, price, amount, units, status)
+    except Exception as e:
+        logger.info(f"Fallback Audit -> {venue} | {asset} | {status} | Amount: ₦{amount:,.2f} | Error: {e}")
 
 
 # ---------------------------------------------------------------------------
-# 3. CORE QUANTITATIVE CLASS
+# 3. CORE QUANTITATIVE REBALANCER CLASS
 # ---------------------------------------------------------------------------
 class ICIERebalancer:
     """
@@ -75,7 +78,7 @@ class ICIERebalancer:
         except Exception as e:
             logger.error(f"CRITICAL: Failed to fetch live portfolio valuation: {e}")
             try:
-                log_audit(
+                _safe_log_audit(
                     venue="ICIE",
                     asset="SYSTEM",
                     price=0.0,
@@ -199,7 +202,7 @@ class ICIERebalancer:
             if order_val < MIN_FIAT_NGN or sell_qty < min_base_vol:
                 logger.info(f"[COMPLIANCE_GATE] Sell order for {asset} below Luno minimums. Skipping.")
                 try:
-                    log_audit(
+                    _safe_log_audit(
                         venue="ICIE",
                         asset=asset,
                         price=float(price),
@@ -218,7 +221,7 @@ class ICIERebalancer:
                 logger.info(f"[DRY RUN] Would execute SELL market order for {pair} (Notional: ₦{order_val})")
                 executed_sells += 1
                 try:
-                    log_audit(
+                    _safe_log_audit(
                         venue="ICIE",
                         asset=pair,
                         price=float(price),
@@ -239,7 +242,7 @@ class ICIERebalancer:
                     if res.get("status") in ["SUCCESS", "PENDING"] or res.get("success") or res.get("order_id"):
                         executed_sells += 1
                         try:
-                            log_audit(
+                            _safe_log_audit(
                                 venue="LUNO",
                                 asset=pair,
                                 price=float(price),
@@ -253,7 +256,7 @@ class ICIERebalancer:
                     else:
                         logger.error(f"Order executor failed SELL fill confirmation for {pair}: {res}")
                         try:
-                            log_audit(
+                            _safe_log_audit(
                                 venue="LUNO",
                                 asset=pair,
                                 price=float(price),
@@ -266,7 +269,7 @@ class ICIERebalancer:
                 except Exception as ex:
                     logger.error(f"Exception during SELL execution for {pair}: {ex}")
                     try:
-                        log_audit(
+                        _safe_log_audit(
                             venue="LUNO",
                             asset=pair,
                             price=float(price),
@@ -290,7 +293,7 @@ class ICIERebalancer:
             available_ngn = refreshed_state.get('ngn_reserve', Decimal('0'))
             logger.info(f"[SETTLEMENT_SYNC] Verified available NGN reserve post-liquidation: ₦{available_ngn:,.2f}")
             try:
-                log_audit(
+                _safe_log_audit(
                     venue="ICIE",
                     asset="SYSTEM",
                     price=0.0,
@@ -303,7 +306,7 @@ class ICIERebalancer:
         except Exception as e:
             logger.error(f"CRITICAL: Failed to refresh wallet state post-sell: {e}")
             try:
-                log_audit(
+                _safe_log_audit(
                     venue="ICIE",
                     asset="SYSTEM",
                     price=0.0,
@@ -354,7 +357,7 @@ class ICIERebalancer:
                 logger.info(f"[DRY RUN] Would execute BUY market order for {pair} (Counter NGN: ₦{order_val})")
                 executed_buys += 1
                 try:
-                    log_audit(
+                    _safe_log_audit(
                         venue="ICIE",
                         asset=pair,
                         price=float(price),
@@ -375,7 +378,7 @@ class ICIERebalancer:
                     if res.get("status") in ["SUCCESS", "PENDING"] or res.get("success") or res.get("order_id"):
                         executed_buys += 1
                         try:
-                            log_audit(
+                            _safe_log_audit(
                                 venue="LUNO",
                                 asset=pair,
                                 price=float(price),
@@ -389,7 +392,7 @@ class ICIERebalancer:
                     else:
                         logger.error(f"Order executor failed BUY fill confirmation for {pair}: {res}")
                         try:
-                            log_audit(
+                            _safe_log_audit(
                                 venue="LUNO",
                                 asset=pair,
                                 price=float(price),
@@ -402,7 +405,7 @@ class ICIERebalancer:
                 except Exception as ex:
                     logger.error(f"Exception during BUY execution for {pair}: {ex}")
                     try:
-                        log_audit(
+                        _safe_log_audit(
                             venue="LUNO",
                             asset=pair,
                             price=float(price),
@@ -423,7 +426,7 @@ class ICIERebalancer:
             max_final_drift = max([abs(d.get('drift', 0)) for d in final_analysis.values()]) if final_analysis else 0.0
             logger.info(f"[FINAL_AUDIT] Rebalance cycle completed. Maximum post-rebalance asset drift: {max_final_drift*100:.2f}%")
             try:
-                log_audit(
+                _safe_log_audit(
                     venue="ICIE",
                     asset="PORTFOLIO",
                     price=0.0,
