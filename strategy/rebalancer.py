@@ -70,9 +70,10 @@ class ICIERebalancer:
 
     def fetch_live_portfolio(self):
         """
-        Fetches live wallet balances (balance + reserved) and real-time spot prices
-        with robust exception handling to prevent API timeouts from killing the engine.
+        Fetches live wallet balances and real-time spot prices directly via LunoConnector.get_portfolio_valuation().
         """
+        if not self.connector:
+            raise RuntimeError("CRITICAL: Luno Connector uninitialized. Live credentials required.")
         try:
             return self.connector.get_portfolio_valuation()
         except Exception as e:
