@@ -13,16 +13,9 @@ Core Architecture:
 import logging
 from decimal import Decimal, ROUND_DOWN
 
-# Safe import guard to prevent import-time module loading failure
-try:
-    from database.repository import log_audit
-except ImportError:
-    def log_audit(venue: str, asset: str, price: float, amount: float, units: str, status: str):
-        pass
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("ICIERebalancer")
-
+# ---------------------------------------------------------------------------
+# 1. MODULE-LEVEL CONSTANTS (Explicitly bound for dashboard & engine imports)
+# ---------------------------------------------------------------------------
 TARGET_WEIGHTS = {
     'XBT': Decimal('0.50'),
     'ETH': Decimal('0.30'),
@@ -31,14 +24,12 @@ TARGET_WEIGHTS = {
 
 MIN_FIAT_NGN = Decimal('50.00')  # Luno absolute minimum fiat order value
 
-# Luno hard exchange base volume floors per asset
 MIN_BASE_VOLUMES = {
     'XBT': Decimal('0.000025'),
     'ETH': Decimal('0.001'),
     'SOL': Decimal('0.05')
 }
 
-# Asset-specific decimal precision increments matching Luno exchange specs
 PAIR_PRECISION = {
     'XBT': Decimal('0.00000001'),
     'ETH': Decimal('0.000001'),
@@ -47,6 +38,22 @@ PAIR_PRECISION = {
 
 LUNO_TAKER_FEE = Decimal('0.0075')  # 0.75% taker fee
 
+# ---------------------------------------------------------------------------
+# 2. LOGGING & REPOSITORY INITIALIZATION
+# ---------------------------------------------------------------------------
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("ICIERebalancer")
+
+try:
+    from database.repository import log_audit
+except ImportError:
+    def log_audit(venue: str, asset: str, price: float, amount: float, units: str, status: str):
+        logger.info(f"Fallback Audit -> {venue} | {asset} | {status} | Amount: ₦{amount:,.2f}")
+
+
+# ---------------------------------------------------------------------------
+# 3. CORE QUANTITATIVE CLASS
+# ---------------------------------------------------------------------------
 class ICIERebalancer:
     """
     Autonomous Institutional Rebalancer implementing two-phase cashless rebalancing,
@@ -436,5 +443,5 @@ class ICIERebalancer:
             "final_max_drift": float(max_final_drift) if 'max_final_drift' in locals() else 0.0
         }
 
-# Backward compatibility alias for dashboard imports
+# Backward compatibility alias
 AutonomousRebalancer = ICIERebalancer
