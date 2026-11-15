@@ -2,8 +2,12 @@ name: ICIE Autonomous Institutional Engine
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # Runs every 6 hours
+    # Runs Monday-Saturday at 09:00, 12:00, 15:00, 18:00 UTC (10:00 AM, 1:00 PM, 4:00 PM, 7:00 PM WAT)
+    - cron: '0 9,12,15,18 * * 1-6'
   workflow_dispatch: # Enables manual trigger from the GitHub Actions tab
+
+permissions:
+  contents: write
 
 jobs:
   run-engine:
@@ -32,6 +36,17 @@ jobs:
           PYTHONUNBUFFERED: '1'
         run: |
           python scripts/luno_institutional_engine.py
+
+      - name: Persist Institutional Audit Logs to Repository
+        if: always()
+        run: |
+          git config user.name "ICIE Autonomous Node"
+          git config user.email "icie-bot@://github.com"
+          git add -f trade_log.csv institutional_audit.log || true
+          if ! git diff --staged --quiet; then
+            git commit -m "chore(audit): update live ICIE execution & audit logs [skip ci]"
+            git push
+          fi
 
       - name: Upload Institutional Audit Logs
         uses: actions/upload-artifact@v4
