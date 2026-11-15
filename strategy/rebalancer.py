@@ -1,6 +1,6 @@
-"""
+ """
 Institutional Crypto Investment Engine (ICIE) - Smart Mid-Spread Cashless Rebalancer
-Target Allocation: BTC 50%, ETH 30%, SOL 20% | Maker-First Spread Capture & Capital Protection
+Target Allocation: BTC 50%, ETH 30%, SOL 20% | Maker-First Spread Capture & Volatility Regime Gate
 """
 
 import os
@@ -9,6 +9,7 @@ import logging
 import pandas as pd
 from datetime import datetime
 from decimal import Decimal, ROUND_DOWN
+from risk.volatility_gate import VolatilityRegimeGate
 
 TARGET_WEIGHTS = {'XBT': Decimal('0.50'), 'ETH': Decimal('0.30'), 'SOL': Decimal('0.20')}
 MAX_WEIGHTS = {'XBT': Decimal('0.60'), 'ETH': Decimal('0.40'), 'SOL': Decimal('0.30')}
@@ -43,6 +44,7 @@ class ICIERebalancer:
             raise ValueError("ICIERebalancer requires live LunoConnector and InstitutionalOrderExecutor.")
         self.connector = connector
         self.order_executor = order_executor
+        self.volatility_gate = VolatilityRegimeGate()
         self.target_weights = {
             k.replace("NGN", "").upper(): Decimal(str(v))
             for k, v in (target_weights or TARGET_WEIGHTS).items()
@@ -79,7 +81,6 @@ class ICIERebalancer:
                 'drift': float(drift), 'dynamic_threshold': float(threshold), 'breached': breached
             }
         return drift_detected, analysis
-
     def _preflight_gate(self, state: dict, sells: list, buys: list) -> tuple[bool, str]:
         reserved_total = sum(state.get('reserved_quantities', {}).values())
         if reserved_total > Decimal('0'):
@@ -159,12 +160,8 @@ class ICIERebalancer:
                 continue
 
             res = self.order_executor.execute_limit_order(
-                pair=pair,
-                side="SELL",
-                target_val=float(notional),
-                current_price=float(sell_px),
-                volume=str(qty),
-                custom_limit_price=float(sell_px)
+                pair=pair, side="SELL", target_val=float(notional),
+                current_price=float(sell_px), volume=str(qty), custom_limit_price=float(sell_px)
             )
             if res.get("status") == "SUCCESS":
                 executed_sells += 1
@@ -186,6 +183,14 @@ class ICIERebalancer:
             if trades >= 4:
                 break
             coin, pair = b['coin'], f"{b['coin']}NGN"
+
+            # Phase B Volatility & Trend Gate: Hold cleared NGN cash during active crash regimes
+            regime = self.volatility_gate.evaluate_asset_regime(coin)
+            logger.info(f"[VOLATILITY_GATE] {regime['reason']}")
+            if not regime["safe_to_buy"]:
+                _record_audit("ICIE", pair, "HOLD_CASH", "0", 0.0, float(deployable), f"VOL_GATE_HOLD: {regime['reason']}")
+                continue
+
             ticker = refreshed.get('market_tickers', {}).get(coin, {})
             buy_px = self._maker_price(ticker, refreshed['spot_prices'][coin], "BUY")
             alloc = deployable * (b['val'] / total_def)
@@ -195,12 +200,8 @@ class ICIERebalancer:
                 continue
 
             res = self.order_executor.execute_limit_order(
-                pair=pair,
-                side="BUY",
-                target_val=float(notional),
-                current_price=float(buy_px),
-                volume=str(qty),
-                custom_limit_price=float(buy_px)
+                pair=pair, side="BUY", target_val=float(notional),
+                current_price=float(buy_px), volume=str(qty), custom_limit_price=float(buy_px)
             )
             if res.get("status") == "SUCCESS":
                 executed_buys += 1
