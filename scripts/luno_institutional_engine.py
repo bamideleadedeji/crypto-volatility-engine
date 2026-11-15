@@ -1,7 +1,3 @@
-
-### File 4 of 4: `scripts/luno_institutional_engine.py`
-
-```python
 #!/usr/bin/env python3
 """
 ICIE Autonomous Institutional Engine (Luno Live Production Node)
