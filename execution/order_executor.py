@@ -89,11 +89,18 @@ class InstitutionalOrderExecutor:
 
         estimated_val = float(resolved_val)
 
-        # 1. Enforce ICIE Constitution Rule 15: Minimum Order of ₦50
+        # 1. Enforce ICIE Constitution Rule 15: Minimum Order of NGN 50
         if resolved_val < MIN_ORDER_NGN:
-            error_msg = f"Order value (₦{estimated_val:,.2f}) is below strict minimum threshold of ₦{MIN_ORDER_NGN}."
+            error_msg = f"Order value (NGN {estimated_val:,.2f}) is below strict minimum threshold of NGN {MIN_ORDER_NGN}."
             logger.warning(error_msg)
-            log_audit(venue="LUNO", asset=clean_pair, price=float(price_dec), amount=estimated_val, units="SKIPPED", status="BELOW_MIN_LIMIT")
+            log_audit(
+                venue="LUNO",
+                asset=clean_pair,
+                price=float(price_dec),
+                amount=estimated_val,
+                units="SKIPPED",
+                status="BELOW_MIN_LIMIT"
+            )
             return {"status": "SKIPPED", "reason": error_msg}
 
         # 2. Generate Unique Order Hash for Idempotency Protection
@@ -103,7 +110,14 @@ class InstitutionalOrderExecutor:
         if check_idempotency(order_hash):
             warning_msg = f"Duplicate order prevented by idempotency check: Hash {order_hash[:8]} for {clean_pair} {clean_side}"
             logger.warning(warning_msg)
-            log_audit(venue="LUNO", asset=clean_pair, price=float(price_dec), amount=estimated_val, units="DUPLICATE", status="DUPLICATE_BLOCKED")
+            log_audit(
+                venue="LUNO",
+                asset=clean_pair,
+                price=float(price_dec),
+                amount=estimated_val,
+                units="DUPLICATE",
+                status="DUPLICATE_BLOCKED"
+            )
             return {"status": "BLOCKED", "reason": warning_msg}
 
         # 3. Enforce Circuit Breakers & Position Limits
@@ -116,7 +130,14 @@ class InstitutionalOrderExecutor:
 
         if not passed:
             logger.error(f"Order rejected by Circuit Breaker: {reason}")
-            log_audit(venue="LUNO", asset=clean_pair, price=float(price_dec), amount=estimated_val, units="REJECTED", status=f"CB_REJECTED: {reason}")
+            log_audit(
+                venue="LUNO",
+                asset=clean_pair,
+                price=float(price_dec),
+                amount=estimated_val,
+                units="REJECTED",
+                status=f"CB_REJECTED: {reason}"
+            )
             return {"status": "REJECTED", "reason": reason}
 
         # 4. Compute Exchange-Compliant Limit Price & Base Volume
@@ -136,7 +157,6 @@ class InstitutionalOrderExecutor:
         if limit_price <= 0:
             return {"status": "FAILED", "error": f"Quantized limit price evaluated to zero for {clean_pair}."}
 
-        # Use explicit volume if supplied, otherwise derive from target NGN value
         if volume is not None and Decimal(str(volume)) > 0:
             crypto_units = Decimal(str(volume)).quantize(vol_tick, rounding=ROUND_DOWN)
         else:
@@ -146,18 +166,25 @@ class InstitutionalOrderExecutor:
 
         if crypto_units < min_vol_limit or notional_ngn < MIN_ORDER_NGN:
             error_msg = (
-                f"Quantized order for {clean_pair} (vol={crypto_units}, notional=₦{notional_ngn:,.2f}) "
-                f"is below Luno minimum base volume ({min_vol_limit}) or ₦50 floor."
+                f"Quantized order for {clean_pair} (vol={crypto_units}, notional=NGN {notional_ngn:,.2f}) "
+                f"is below Luno minimum base volume ({min_vol_limit}) or NGN 50 floor."
             )
             logger.warning(error_msg)
-            log_audit(venue="LUNO", asset=clean_pair, price=float(limit_price), amount=float(notional_ngn), units=str(crypto_units), status="BELOW_BASE_VOLUME")
+            log_audit(
+                venue="LUNO",
+                asset=clean_pair,
+                price=float(limit_price),
+                amount=float(notional_ngn),
+                units=str(crypto_units),
+                status="BELOW_BASE_VOLUME"
+            )
             return {"status": "SKIPPED", "reason": error_msg}
 
         # 5. Dispatch Live Order via Luno Connector & Verify Exchange Response
         try:
             logger.info(
                 f"Dispatching LIVE {clean_side} order on {clean_pair} | "
-                f"Volume: {crypto_units} | Limit Price: ₦{limit_price:,.2f} | Notional: ₦{notional_ngn:,.2f}"
+                f"Volume: {crypto_units} | Limit Price: NGN {limit_price:,.2f} | Notional: NGN {notional_ngn:,.2f}"
             )
 
             response = self.connector.post_order(
@@ -223,14 +250,26 @@ class InstitutionalOrderExecutor:
                 "order_response": response
             }
 
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Order execution exception on {clean_pair}: {error_msg}")
-            record_order(
-                order_hash=order_hash,
-                order_id="EXCEPTION",
-                asset=clean_pair,
-                side=clean_side,
-                amount=float(notional_ngn),
-                status="FAILED"
-            )
+except Exception as e:
+error_msg = str(e)
+logger.error(f"Order execution exception on {clean_pair}: {error_msg}")
+record_order(
+order_hash=order_hash,
+order_id="EXCEPTION",
+asset=clean_pair,
+side=clean_side,
+amount=float(notional_ngn),
+status="FAILED"
+)
+log_audit(
+venue="LUNO",
+asset=clean_pair,
+price=float(limit_price),
+amount=float(notional_ngn),
+units=str(crypto_units),
+status=f"EXCEPTION: {error_msg}"
+)
+return {"status": "FAILED", "error": error_msg}
+def execute_market_order(self, **kwargs) -> dict:
+"""Alias routing market order calls through the validated limit-order executor."""
+return self.execute_limit_order(**kwargs)
