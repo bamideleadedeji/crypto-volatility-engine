@@ -32,10 +32,10 @@ LUNO_VOLUME_PRECISION = {
 }
 
 LUNO_PRICE_PRECISION = {
-    "XBTNGN": Decimal("1"),           # Whole Naira
+    "XBTNGN": Decimal("1"),             # Whole Naira
     "BTCNGN": Decimal("1"),
-    "ETHNGN": Decimal("1"),           # Whole Naira
-    "SOLNGN": Decimal("0.01")         # 2 decimals
+    "ETHNGN": Decimal("1"),             # Whole Naira
+    "SOLNGN": Decimal("0.01")           # 2 decimals
 }
 
 MIN_ORDER_NGN = Decimal("50.00")
@@ -88,6 +88,10 @@ class InstitutionalOrderExecutor:
                 resolved_val = Decimal(str(quantity)) * price_dec
 
         estimated_val = float(resolved_val)
+        notional_ngn = Decimal("0")
+        crypto_units = Decimal("0")
+        limit_price = Decimal("0")
+        order_hash = "uninitialized"
 
         # 1. Enforce ICIE Constitution Rule 15: Minimum Order of NGN 50
         if resolved_val < MIN_ORDER_NGN:
@@ -250,26 +254,27 @@ class InstitutionalOrderExecutor:
                 "order_response": response
             }
 
-except Exception as e:
-error_msg = str(e)
-logger.error(f"Order execution exception on {clean_pair}: {error_msg}")
-record_order(
-order_hash=order_hash,
-order_id="EXCEPTION",
-asset=clean_pair,
-side=clean_side,
-amount=float(notional_ngn),
-status="FAILED"
-)
-log_audit(
-venue="LUNO",
-asset=clean_pair,
-price=float(limit_price),
-amount=float(notional_ngn),
-units=str(crypto_units),
-status=f"EXCEPTION: {error_msg}"
-)
-return {"status": "FAILED", "error": error_msg}
-def execute_market_order(self, **kwargs) -> dict:
-"""Alias routing market order calls through the validated limit-order executor."""
-return self.execute_limit_order(**kwargs)
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Order execution exception on {clean_pair}: {error_msg}")
+            record_order(
+                order_hash=order_hash,
+                order_id="EXCEPTION",
+                asset=clean_pair,
+                side=clean_side,
+                amount=float(notional_ngn),
+                status="FAILED"
+            )
+            log_audit(
+                venue="LUNO",
+                asset=clean_pair,
+                price=float(limit_price),
+                amount=float(notional_ngn),
+                units=str(crypto_units),
+                status=f"EXCEPTION: {error_msg}"
+            )
+            return {"status": "FAILED", "error": error_msg}
+
+    def execute_market_order(self, **kwargs) -> dict:
+        """Alias routing market order calls through the validated limit-order executor."""
+        return self.execute_limit_order(**kwargs)
