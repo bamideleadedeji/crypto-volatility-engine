@@ -1,1 +1,2 @@
 timestamp,asset,side,volume,execution_price,total_value_ngn,status
+2026-11-15T21:30:43.024512,PORTFOLIO,HOLD,0,0.0,54508.26,HALTED: Spread too wide on ETHNGN (26.47% > 12.0%).
