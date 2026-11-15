@@ -29,7 +29,7 @@ import plotly.express as px
 
 from core.config import load_config
 from core.logging import setup_logger
-from database.repository import init_database, fetch_audit_ledger, log_audit, get_paper_portfolio, update_paper_portfolio
+from database.repository import init_database, fetch_audit_ledger, log_audit
 from execution.luno_connector import LunoConnector
 from execution.order_executor import InstitutionalOrderExecutor
 from risk.risk_manager import RiskManager
@@ -75,27 +75,26 @@ luno_key = st.secrets.get("LUNO_API_KEY_ID") or os.environ.get("LUNO_API_KEY_ID"
 luno_secret = st.secrets.get("LUNO_API_KEY_SECRET") or os.environ.get("LUNO_API_KEY_SECRET")
 
 if not luno_key or not luno_secret:
-    st.warning("⚠️ Luno API credentials not detected in Streamlit secrets. Operating in Offline Simulation & Paper Mode.")
+    st.error("🚨 Luno API credentials not detected in Streamlit secrets. Live telemetry and execution are locked.")
 
 connector = LunoConnector(luno_key, luno_secret) if (luno_key and luno_secret) else None
 order_executor = InstitutionalOrderExecutor(connector, circuit_breaker) if connector else None
+rebalancer = ICIERebalancer(connector, order_executor) if (connector and order_executor) else None
 
-# Paper Trading Mode Check
-paper_mode = st.sidebar.checkbox("🔒 Paper Trading Mode (Dry Run)", value=config.get("paper_mode", True))
+# Explicit Live Execution Arming Switch (Prevents accidental clicks on Streamlit Cloud)
+live_execution_armed = st.sidebar.checkbox("🛡️ Arm Live Luno Order Execution", value=False)
 
-# Instantiate ICIERebalancer passing connector and order_executor per institutional architecture
-rebalancer = ICIERebalancer(connector, order_executor, dry_run=paper_mode)
 
 def safe_execute_market_order(executor, pair: str, side: str, notional_ngn: float, current_price: float) -> dict:
     if executor is None:
-        return {"status": "FAILED", "error": "No order executor available (Offline Mode)"}
+        return {"status": "FAILED", "error": "No live order executor available (Missing Luno credentials)."}
 
     notional_ngn = float(notional_ngn)
     current_price = float(current_price)
     side = side.upper()
 
     quantity = (notional_ngn / current_price) if current_price > 0 else 0.0
-    precision = 8 if ("XBT" in pair or "BTC" in pair) else 6
+    precision = 8 if ("XBT" in pair or "BTC" in pair) else (2 if "SOL" in pair else 6)
     volume_str = f"{quantity:.{precision}f}"
     counter_str = f"{notional_ngn:.2f}"
 
@@ -146,6 +145,7 @@ def safe_execute_market_order(executor, pair: str, side: str, notional_ngn: floa
         "error": f"Could not call execute_market_order with any known signature. Last error: {last_error}"
     }
 
+
 @st.cache_data(ttl=5, show_spinner=False)
 def fetch_live_portfolio_valuation(_connector):
     """
@@ -156,26 +156,26 @@ def fetch_live_portfolio_valuation(_connector):
         raise RuntimeError("CRITICAL: Luno Connector uninitialized. Live credentials required.")
     return _connector.get_portfolio_valuation()
 
+
+EMPTY_PORTFOLIO_STATE = {
+    'total_portfolio': Decimal('0'),
+    'crypto_subtotal': Decimal('0'),
+    'ngn_reserve': Decimal('0'),
+    'ngn_total': Decimal('0'),
+    'wallet_quantities': {'XBT': Decimal('0'), 'ETH': Decimal('0'), 'SOL': Decimal('0'), 'NGN': Decimal('0')},
+    'free_quantities': {'XBT': Decimal('0'), 'ETH': Decimal('0'), 'SOL': Decimal('0'), 'NGN': Decimal('0')},
+    'reserved_quantities': {'XBT': Decimal('0'), 'ETH': Decimal('0'), 'SOL': Decimal('0'), 'NGN': Decimal('0')},
+    'spot_prices': {'XBT': Decimal('0'), 'ETH': Decimal('0'), 'SOL': Decimal('0')},
+    'market_tickers': {},
+    'asset_values': {'XBT': Decimal('0'), 'ETH': Decimal('0'), 'SOL': Decimal('0')}
+}
+
 # Fetch live portfolio state
 try:
-    portfolio_state = fetch_live_portfolio_valuation(connector) if connector else {
-        'total_portfolio': Decimal('0'),
-        'crypto_subtotal': Decimal('0'),
-        'ngn_reserve': Decimal('0'),
-        'wallet_quantities': {'XBT': Decimal('0'), 'ETH': Decimal('0'), 'SOL': Decimal('0'), 'NGN': Decimal('0')},
-        'spot_prices': {'XBT': Decimal('0'), 'ETH': Decimal('0'), 'SOL': Decimal('0')},
-        'asset_values': {'XBT': Decimal('0'), 'ETH': Decimal('0'), 'SOL': Decimal('0')}
-    }
+    portfolio_state = fetch_live_portfolio_valuation(connector) if connector else EMPTY_PORTFOLIO_STATE
 except Exception as e:
     st.error(f"🚨 Failed to connect to Luno API: {e}")
-    portfolio_state = {
-        'total_portfolio': Decimal('0'),
-        'crypto_subtotal': Decimal('0'),
-        'ngn_reserve': Decimal('0'),
-        'wallet_quantities': {},
-        'spot_prices': {},
-        'asset_values': {}
-    }
+    portfolio_state = EMPTY_PORTFOLIO_STATE
 
 total_portfolio_val = float(portfolio_state.get('total_portfolio', Decimal('0')))
 total_crypto_val = float(portfolio_state.get('crypto_subtotal', Decimal('0')))
@@ -205,35 +205,38 @@ if st.sidebar.button("🔄 Clear Cache & Refresh Feed"):
 # Top Metrics Banner (Directly reflecting Luno App valuation)
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Total Portfolio Capital", f"₦{total_portfolio_val:,.2f}")
-m2.metric("Liquid NGN Reserve", f"₦{float(ngn_balance):,.2f}")
+m2.metric("Cleared Free NGN", f"₦{float(ngn_balance):,.2f}")
 m3.metric("XBTNGN Spot Price", f"₦{float(prices.get('XBT', 0.0)):,.2f}")
 m4.metric("ETHNGN Spot Price", f"₦{float(prices.get('ETH', 0.0)):,.2f}")
 
 st.divider()
 
 if app_mode == "Portfolio & Rebalancing Execution":
-    st.subheader("Autonomous 50/30/20 Closed-Loop Rebalancing Engine")
+    st.subheader("Autonomous 50/30/20 Closed-Loop Cashless Rebalancing Engine")
     col_w1, col_w2, col_w3 = st.columns(3)
     col_w1.metric("BTC Target Allocation", "50%")
     col_w2.metric("ETH Target Allocation", "30%")
     col_w3.metric("SOL Target Allocation", "20%")
 
     st.markdown("### Current Asset Breakdown & Dynamic Exchange-Floor Telemetry")
-    
-    drift_detected, drift_analysis = rebalancer.evaluate_drift(portfolio_state)
+
+    if rebalancer and total_portfolio_val > 0:
+        drift_detected, drift_analysis = rebalancer.evaluate_drift(portfolio_state)
+    else:
+        drift_detected, drift_analysis = False, {}
 
     breakdown_data = []
     pair_map = {'XBT': 'XBTNGN', 'ETH': 'ETHNGN', 'SOL': 'SOLNGN'}
-    
+
     for coin, pair in pair_map.items():
         data = drift_analysis.get(coin, {})
         val = float(asset_vals.get(coin, Decimal('0')))
         units = float(balances.get(coin, Decimal('0')))
         curr_w = (val / total_portfolio_val * 100) if total_portfolio_val > 0 else 0.0
         target_w = float(TARGET_WEIGHTS.get(coin, Decimal('0')) * 100)
-        dyn_thresh = float(data.get('dynamic_threshold', 0.05) * 100)
+        dyn_thresh = float(data.get('dynamic_threshold', 0.03) * 100)
         min_base = float(MIN_BASE_VOLUMES.get(coin, 0.0))
-        
+
         breakdown_data.append({
             "Asset Pair": pair,
             "Units": units,
@@ -245,138 +248,128 @@ if app_mode == "Portfolio & Rebalancing Execution":
             "Base Floor": f"{min_base} {coin}",
             "Compliance Status": "🚨 Actionable Breach" if data.get('breached') else "✅ Within Tolerance"
         })
-    
+
     breakdown_df = pd.DataFrame(breakdown_data)
     st.dataframe(breakdown_df, width="stretch")
 
     col_chart1, col_chart2 = st.columns(2)
     with col_chart1:
         fig_actual = px.pie(
-            breakdown_df, 
-            names="Asset Pair", 
-            values="Market Value (₦)", 
-            title="Actual Portfolio Allocation",
-            hole=0.4
-        )
-        st.plotly_chart(fig_actual, width="stretch")
-        
-    with col_chart2:
-        fig_target = px.bar(
-            breakdown_df, 
-            x="Asset Pair", 
-            y=["Current Weight (%)", "Target Weight (%)"], 
-            barmode="group",
-            title="Current vs. Target Weight Comparison (%)"
-        )
-        st.plotly_chart(fig_target, width="stretch")
-
-    max_drift = max([abs(d.get('drift', 0)) for d in drift_analysis.values()]) if drift_analysis else 0.0
-    st.info(f"📊 **Max Absolute Drift:** {max_drift*100:.2f}% | **Engine Status:** {'Drift Exceeded (Ready for Settlement)' if drift_detected else 'Within Exchange-Floor Tolerances'}")
-
-    col_btn1, col_btn2 = st.columns(2)
-    with col_btn1:
-        if st.button("🚀 Execute Autonomous Closed-Loop Rebalance", width="stretch"):
-            try:
-                if not drift_detected:
-                    st.info("⏸️ Rebalance skipped: Portfolio drift is within dynamic exchange-floor limits. No action required.")
-                else:
-                    st.success("✅ Drift exceeds exchange-floor threshold. Executing Settlement-Verified Rebalance...")
-                    
-                    log_capture_string = io.StringIO()
-                    handler = logging.StreamHandler(log_capture_string)
-                    handler.setLevel(logging.INFO)
-                    
-                    root_logger = logging.getLogger()
-                    root_logger.addHandler(handler)
-                    
-                    try:
-                        rebalancer.dry_run = paper_mode
-                        rebalancer.execute_rebalance()
-                        execution_output = log_capture_string.getvalue()
-                    except Exception as engine_err:
-                        execution_output = f"Execution Exception: {str(engine_err)}"
-                    finally:
-                        root_logger.removeHandler(handler)
-                    
-                    with st.expander("📋 View Live Execution & Settlement Logs", expanded=True):
-                        st.code(execution_output if execution_output else "Engine executed successfully. Check trade_log.csv for records.", language="text")
-                    
-                    st.success("✅ Rebalance cycle completed successfully. Ledger and audit files updated.")
-            except Exception as e:
-                st.error(f"🚨 Execution Error: {str(e)}")
-            
-    with col_btn2:
-        with st.expander("🛠️ Interactive Manual Order Console (Dry Run)"):
-            manual_pair = st.selectbox("Select Pair", tickers)
-            manual_side = st.selectbox("Side", ["BUY", "SELL"])
-            manual_notional = st.number_input("Notional Amount (₦)", min_value=50.0, value=1000.0, step=100.0)
-            if st.button("Submit Test Order"):
-                cur_p = float(prices.get(manual_pair.replace("NGN", ""), 0.0))
-                res = safe_execute_market_order(order_executor, manual_pair, manual_side, manual_notional, cur_p)
-                st.json(res)
-
+            breakdown_df,
+            names="Asset Pair",
+            values="Market Value (₦)",
+title="Actual Portfolio Allocation",
+hole=0.4
+)
+st.plotly_chart(fig_actual, width="stretch")
+with col_chart2:
+fig_target = px.bar(
+breakdown_df,
+x="Asset Pair",
+y=["Current Weight (%)", "Target Weight (%)"],
+barmode="group",
+title="Current vs. Target Weight Comparison (%)"
+)
+st.plotly_chart(fig_target, width="stretch")
+max_drift = max([abs(d.get('drift', 0)) for d in drift_analysis.values()]) if drift_analysis else 0.0
+st.info(f"📊 Max Absolute Drift: {max_drift*100:.2f}% | Engine Status: {'Drift Exceeded (Ready for Live Settlement)' if drift_detected else 'Within Exchange-Floor Tolerances'}")
+col_btn1, col_btn2 = st.columns(2)
+with col_btn1:
+if st.button("🚀 Execute Live Cashless Rebalance", width="stretch"):
+if not rebalancer:
+st.error("🚨 Cannot execute: Luno API credentials are missing.")
+elif not live_execution_armed:
+st.warning("🛡️ Safety Gate Active: Check 'Arm Live Luno Order Execution' in the left sidebar to dispatch real orders.")
+elif not drift_detected:
+st.info("⏸️ Rebalance skipped: Portfolio drift is within dynamic exchange-floor limits. No action required.")
+else:
+st.success("✅ Live Execution Armed & Drift Breached. Running Two-Phase Settlement-Verified Rebalance...")
+log_capture_string = io.StringIO()
+handler = logging.StreamHandler(log_capture_string)
+handler.setLevel(logging.INFO)
+root_logger = logging.getLogger()
+root_logger.addHandler(handler)
+try:
+result = rebalancer.execute_rebalance(initial_state=portfolio_state)
+execution_output = log_capture_string.getvalue()
+except Exception as engine_err:
+result = {"status": "ERROR", "error": str(engine_err)}
+execution_output = f"Execution Exception: {str(engine_err)}"
+finally:
+root_logger.removeHandler(handler)
+with st.expander("📋 View Live Execution & Settlement Logs", expanded=True):
+st.code(execution_output if execution_output else str(result), language="text")
+if result.get("status") == "SUCCESS":
+st.success(f"✅ Live rebalance cycle completed (Sells: {result.get('executed_sells', 0)}, Buys: {result.get('executed_buys', 0)}). Refreshing feed...")
+st.cache_data.clear()
+else:
+st.warning(f"⚠️ Rebalance halted or incomplete: {result}")
+with col_btn2:
+with st.expander("🛠️ Interactive Live Manual Order Console"):
+manual_pair = st.selectbox("Select Pair", tickers)
+manual_side = st.selectbox("Side", ["BUY", "SELL"])
+manual_notional = st.number_input("Notional Amount (₦)", min_value=50.0, value=1000.0, step=100.0)
+if st.button("Submit Live Order"):
+if not live_execution_armed:
+st.warning("🛡️ Safety Gate Active: Check 'Arm Live Luno Order Execution' in the sidebar first.")
+else:
+cur_p = float(prices.get(manual_pair.replace("NGN", ""), 0.0))
+res = safe_execute_market_order(order_executor, manual_pair, manual_side, manual_notional, cur_p)
+st.json(res)
 elif app_mode == "GARCH Volatility & VaR Suite":
-    st.subheader("Advanced GARCH(1,1) Econometrics & Multi-Asset VaR/CVaR")
-    
-    col_g1, col_g2 = st.columns(2)
-    with col_g1:
-        lookback_days = st.slider("Historical Lookback Window (Days)", 30, 365, 90)
-    with col_g2:
-        confidence_level = st.selectbox("VaR Confidence Level", [0.95, 0.975, 0.99], index=0)
-
-    if st.button("📈 Run Econometric Estimation & Covariance Shrinkage", width="stretch"):
-        with st.spinner("Computing GARCH(1,1) volatility models and historical VaR..."):
-            np.random.seed(42)
-            dates = pd.date_range(end=pd.Timestamp.today(), periods=lookback_days)
-            sim_vol = pd.DataFrame({
-                "BTC Volatility": np.random.normal(0.04, 0.005, lookback_days).cumsum() * 0.01 + 0.05,
-                "ETH Volatility": np.random.normal(0.05, 0.007, lookback_days).cumsum() * 0.01 + 0.07,
-                "SOL Volatility": np.random.normal(0.06, 0.010, lookback_days).cumsum() * 0.01 + 0.09,
-            }, index=dates)
-            
-            st.success("✅ Econometric pipeline successfully computed.")
-            st.line_chart(sim_vol)
-            
-            m_v1, m_v2, m_v3 = st.columns(3)
-            m_v1.metric("Parametric VaR (95%)", f"-₦{(total_portfolio_val * 0.034):,.2f}")
-            m_v2.metric("Expected Shortfall (CVaR)", f"-₦{(total_portfolio_val * 0.048):,.2f}")
-            m_v3.metric("ARCH LM Test p-value", "0.0001 (Heteroskedasticity Confirmed)")
-
+st.subheader("Advanced GARCH(1,1) Econometrics & Multi-Asset VaR/CVaR")
+col_g1, col_g2 = st.columns(2)
+with col_g1:
+lookback_days = st.slider("Historical Lookback Window (Days)", 30, 365, 90)
+with col_g2:
+confidence_level = st.selectbox("VaR Confidence Level", [0.95, 0.975, 0.99], index=0)
+if st.button("📈 Run Econometric Estimation & Covariance Shrinkage", width="stretch"):
+with st.spinner("Computing GARCH(1,1) volatility models and historical VaR..."):
+np.random.seed(42)
+dates = pd.date_range(end=pd.Timestamp.today(), periods=lookback_days)
+sim_vol = pd.DataFrame({
+"BTC Volatility": np.random.normal(0.04, 0.005, lookback_days).cumsum() * 0.01 + 0.05,
+"ETH Volatility": np.random.normal(0.05, 0.007, lookback_days).cumsum() * 0.01 + 0.07,
+"SOL Volatility": np.random.normal(0.06, 0.010, lookback_days).cumsum() * 0.01 + 0.09,
+}, index=dates)
+st.success("✅ Econometric pipeline successfully computed.")
+st.line_chart(sim_vol)
+m_v1, m_v2, m_v3 = st.columns(3)
+m_v1.metric("Parametric VaR (95%)", f"-₦{(total_portfolio_val * 0.034):,.2f}")
+m_v2.metric("Expected Shortfall (CVaR)", f"-₦{(total_portfolio_val * 0.048):,.2f}")
+m_v3.metric("ARCH LM Test p-value", "0.0001 (Heteroskedasticity Confirmed)")
 elif app_mode == "Backtest Simulation Engine":
-    st.subheader("Institutional Backtest Simulation Engine")
-    bt_capital = st.number_input("Initial Backtest Capital (₦)", value=10_000_000.0, step=1_000_000.0)
-    if st.button("🚀 Run Backtest Simulation vs Buy & Hold", width="stretch"):
-        with st.spinner("Running historical backtest simulation..."):
-            st.success("✅ Backtest Simulation Complete.")
-            bt_days = 90
-            bt_dates = pd.date_range(end=pd.Timestamp.today(), periods=bt_days)
-            bt_perf = pd.DataFrame({
-                "ICIE Rebalanced Engine": bt_capital * (1 + np.random.normal(0.0015, 0.015, bt_days)).cumprod(),
-                "Static Buy & Hold (50/30/20)": bt_capital * (1 + np.random.normal(0.0010, 0.022, bt_days)).cumprod()
-            }, index=bt_dates)
-            st.line_chart(bt_perf)
-
+st.subheader("Institutional Backtest Simulation Engine")
+bt_capital = st.number_input("Initial Backtest Capital (₦)", value=10_000_000.0, step=1_000_000.0)
+if st.button("🚀 Run Backtest Simulation vs Buy & Hold", width="stretch"):
+with st.spinner("Running historical backtest simulation..."):
+st.success("✅ Backtest Simulation Complete.")
+bt_days = 90
+bt_dates = pd.date_range(end=pd.Timestamp.today(), periods=bt_days)
+bt_perf = pd.DataFrame({
+"ICIE Rebalanced Engine": bt_capital * (1 + np.random.normal(0.0015, 0.015, bt_days)).cumprod(),
+"Static Buy & Hold (50/30/20)": bt_capital * (1 + np.random.normal(0.0010, 0.022, bt_days)).cumprod()
+}, index=bt_dates)
+st.line_chart(bt_perf)
 elif app_mode == "Market Regime & Attribution":
-    st.subheader("Market Regime Detection & Monthly Performance Attribution")
-    st.info("Market regime monitoring active. Current Detected Regime: **Bullish Low-Volatility**")
-    
-    attr_data = pd.DataFrame([
-        {"Month": "2026-09", "Total Return (%)": "+4.2%", "BTC Contribution": "+2.8%", "ETH Contribution": "+1.1%", "SOL Contribution": "+0.3%"},
-        {"Month": "2026-10", "Total Return (%)": "+7.5%", "BTC Contribution": "+3.5%", "ETH Contribution": "+2.9%", "SOL Contribution": "+1.1%"},
-        {"Month": "2026-11 (TD)", "Total Return (%)": "-2.1%", "BTC Contribution": "-0.9%", "ETH Contribution": "-0.8%", "SOL Contribution": "-0.4%"},
-    ])
-    st.dataframe(attr_data, width="stretch")
-
+st.subheader("Market Regime Detection & Monthly Performance Attribution")
+st.info("Market regime monitoring active. Current Detected Regime: Bullish Low-Volatility")
+attr_data = pd.DataFrame([
+{"Month": "2026-09", "Total Return (%)": "+4.2%", "BTC Contribution": "+2.8%", "ETH Contribution": "+1.1%", "SOL Contribution": "+0.3%"},
+{"Month": "2026-10", "Total Return (%)": "+7.5%", "BTC Contribution": "+3.5%", "ETH Contribution": "+2.9%", "SOL Contribution": "+1.1%"},
+{"Month": "2026-11 (TD)", "Total Return (%)": "-2.1%", "BTC Contribution": "-0.9%", "ETH Contribution": "-0.8%", "SOL Contribution": "-0.4%"},
+])
+st.dataframe(attr_data, width="stretch")
 elif app_mode == "SQLite Audit Ledger":
-    st.subheader("📜 SQLite WAL Audit Ledger & Event History")
-    audit_df = fetch_audit_ledger(100)
-    if not audit_df.empty:
-        st.dataframe(audit_df, width="stretch")
-    else:
-        st.info("No audit logs recorded in SQLite WAL database yet. Reviewing local `institutional_audit.log` instead:")
-        if os.path.exists("institutional_audit.log"):
-            with open("institutional_audit.log", "r", encoding="utf-8") as f:
-                log_lines = f.readlines()
-            st.code("".join(log_lines[-50:]), language="text")
-        else:
-            st.warning("No audit log files found.")
+st.subheader("📜 SQLite WAL Audit Ledger & Event History")
+audit_df = fetch_audit_ledger(100)
+if not audit_df.empty:
+st.dataframe(audit_df, width="stretch")
+else:
+st.info("No audit logs recorded in SQLite WAL database yet. Reviewing local institutional_audit.log instead:")
+if os.path.exists("institutional_audit.log"):
+with open("institutional_audit.log", "r", encoding="utf-8") as f:
+log_lines = f.readlines()
+st.code("".join(log_lines[-50:]), language="text")
+else:
+st.warning("No audit log files found.")
