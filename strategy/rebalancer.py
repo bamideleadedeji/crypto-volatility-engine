@@ -1,6 +1,6 @@
-"""
-Institutional Crypto Investment Engine (ICIE) - Live Cashless Rebalancer
-Target Allocation: BTC 50%, ETH 30%, SOL 20% | Zero External Cash Injection
+ """
+Institutional Crypto Investment Engine (ICIE) - Smart Mid-Spread Cashless Rebalancer
+Target Allocation: BTC 50%, ETH 30%, SOL 20% | Maker-First Spread Capture & Capital Protection
 """
 
 import os
@@ -15,8 +15,8 @@ MAX_WEIGHTS = {'XBT': Decimal('0.60'), 'ETH': Decimal('0.40'), 'SOL': Decimal('0
 MIN_BASE_VOLUMES = {'XBT': Decimal('0.000025'), 'ETH': Decimal('0.001'), 'SOL': Decimal('0.05')}
 PAIR_PRECISION = {'XBT': Decimal('0.00000001'), 'ETH': Decimal('0.000001'), 'SOL': Decimal('0.01')}
 MIN_FIAT_NGN = Decimal('50.00')
-LUNO_FEE = Decimal('0.0075')
-MAX_SPREAD = Decimal('0.035')
+EST_FEE_BUFFER = Decimal('0.0025')
+MAX_SPREAD = Decimal('0.12')
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ICIERebalancer")
@@ -48,6 +48,14 @@ class ICIERebalancer:
             for k, v in (target_weights or TARGET_WEIGHTS).items()
         }
 
+    @staticmethod
+    def _maker_price(ticker: dict, fallback: Decimal, side: str) -> Decimal:
+        bid, ask = ticker.get('bid', Decimal('0')), ticker.get('ask', Decimal('0'))
+        if bid > 0 and ask > bid:
+            spread = ask - bid
+            return bid + (spread * (Decimal('0.65') if side == "SELL" else Decimal('0.35')))
+        return fallback
+
     def evaluate_drift(self, portfolio_state: dict):
         total = portfolio_state.get('total_portfolio', Decimal('0'))
         if total <= 0:
@@ -73,37 +81,41 @@ class ICIERebalancer:
         return drift_detected, analysis
 
     def _preflight_gate(self, state: dict, sells: list, buys: list) -> tuple[bool, str]:
+        reserved_total = sum(state.get('reserved_quantities', {}).values())
+        if reserved_total > Decimal('0'):
+            return False, "Active open order detected in reserved wallet. Waiting for existing maker order to fill."
+
         proj_ngn = state.get('ngn_reserve', Decimal('0'))
         tickers = state.get('market_tickers', {})
         for s in sells:
             t = tickers.get(s['coin'], {})
             if t.get('spread_pct', Decimal('0')) > MAX_SPREAD:
-                return False, f"Spread too wide on {s['coin']}NGN ({t['spread_pct']*100:.2f}%)."
-            bid = t.get('bid') or state['spot_prices'][s['coin']]
-            qty = (s['val'] / bid).quantize(PAIR_PRECISION[s['coin']], rounding=ROUND_DOWN)
-            if qty >= MIN_BASE_VOLUMES[s['coin']] and (qty * bid) >= MIN_FIAT_NGN:
-                proj_ngn += (qty * bid) * (Decimal('1') - LUNO_FEE)
+                return False, f"Spread too wide on {s['coin']}NGN ({t['spread_pct']*100:.2f}% > 12.0%)."
+            sell_px = self._maker_price(t, state['spot_prices'][s['coin']], "SELL")
+            qty = (s['val'] / sell_px).quantize(PAIR_PRECISION[s['coin']], rounding=ROUND_DOWN)
+            if qty >= MIN_BASE_VOLUMES[s['coin']] and (qty * sell_px) >= MIN_FIAT_NGN:
+                proj_ngn += (qty * sell_px) * (Decimal('1') - EST_FEE_BUFFER)
 
         total_def = sum(b['val'] for b in buys)
         if proj_ngn < MIN_FIAT_NGN or total_def <= 0:
-            return False, f"Insufficient projected NGN (₦{proj_ngn:,.2f}) or zero deficit."
+            return False, f"Insufficient projected NGN (₦{proj_ngn:,.2f}) or zero underweight deficit."
 
         deployable = min(proj_ngn, total_def)
         for b in buys:
             t = tickers.get(b['coin'], {})
             if t.get('spread_pct', Decimal('0')) > MAX_SPREAD:
-                return False, f"Spread too wide on {b['coin']}NGN ({t['spread_pct']*100:.2f}%)."
-            ask = t.get('ask') or state['spot_prices'][b['coin']]
-            alloc = deployable * (b['val'] / total_def) * (Decimal('1') - LUNO_FEE)
-            qty = (alloc / ask).quantize(PAIR_PRECISION[b['coin']], rounding=ROUND_DOWN)
-            if qty >= MIN_BASE_VOLUMES[b['coin']] and (qty * ask) >= MIN_FIAT_NGN:
-                return True, "Pre-flight disbalance and spread checks passed."
-        return False, f"Projected NGN (₦{proj_ngn:,.2f}) cannot meet Luno minimum lot sizes for underweight buys."
+                return False, f"Spread too wide on {b['coin']}NGN ({t['spread_pct']*100:.2f}% > 12.0%)."
+            buy_px = self._maker_price(t, state['spot_prices'][b['coin']], "BUY")
+            alloc = deployable * (b['val'] / total_def) * (Decimal('1') - EST_FEE_BUFFER)
+            qty = (alloc / buy_px).quantize(PAIR_PRECISION[b['coin']], rounding=ROUND_DOWN)
+            if qty >= MIN_BASE_VOLUMES[b['coin']] and (qty * buy_px) >= MIN_FIAT_NGN:
+                return True, "Pre-flight maker spread and disbalance checks passed."
+        return False, f"Projected NGN (₦{proj_ngn:,.2f}) below Luno minimum lot sizes for underweight buys."
 
     def _wait_for_ngn_settlement(self, baseline_ngn: Decimal, expected_gain: Decimal) -> dict:
         latest = None
-        for _ in range(5):
-            time.sleep(2.5)
+        for _ in range(6):
+            time.sleep(3.0)
             latest = self.connector.get_portfolio_valuation()
             reserved = sum(latest.get('reserved_quantities', {}).get(c, Decimal('0')) for c in ['XBT', 'ETH', 'SOL'])
             if reserved == Decimal('0') and latest.get('ngn_reserve', Decimal('0')) >= baseline_ngn + expected_gain * Decimal('0.90'):
@@ -138,19 +150,27 @@ class ICIERebalancer:
             if trades >= 4:
                 break
             coin, pair = s['coin'], f"{s['coin']}NGN"
-            bid = state.get('market_tickers', {}).get(coin, {}).get('bid') or state['spot_prices'][coin]
+            ticker = state.get('market_tickers', {}).get(coin, {})
+            sell_px = self._maker_price(ticker, state['spot_prices'][coin], "SELL")
             free_qty = state.get('free_quantities', {}).get(coin, Decimal('0'))
-            qty = min((s['val'] / bid).quantize(PAIR_PRECISION[coin], rounding=ROUND_DOWN), free_qty)
-            notional = qty * bid
+            qty = min((s['val'] / sell_px).quantize(PAIR_PRECISION[coin], rounding=ROUND_DOWN), free_qty)
+            notional = qty * sell_px
             if qty < MIN_BASE_VOLUMES[coin] or notional < MIN_FIAT_NGN:
                 continue
 
-            res = self.order_executor.execute_limit_order(pair=pair, side="SELL", target_val=float(notional), current_price=float(bid), volume=str(qty))
+            res = self.order_executor.execute_limit_order(
+                pair=pair,
+                side="SELL",
+                target_val=float(notional),
+                current_price=float(sell_px),
+                volume=str(qty),
+                custom_limit_price=float(sell_px)
+            )
             if res.get("status") == "SUCCESS":
                 executed_sells += 1
                 trades += 1
-                expected_gain += notional * (Decimal('1') - LUNO_FEE)
-                _record_audit("LUNO", pair, "SELL", str(qty), float(bid), float(notional), f"SUCCESS:{res.get('order_id')}")
+                expected_gain += notional * (Decimal('1') - EST_FEE_BUFFER)
+                _record_audit("LUNO", pair, "SELL", str(qty), float(sell_px), float(notional), f"PLACED:{res.get('order_id')}")
 
         if executed_sells == 0 and baseline_ngn < MIN_FIAT_NGN:
             return {"status": "FAILED_PHASE1_LIQUIDATION", "executed_sells": 0, "executed_buys": 0}
@@ -159,25 +179,33 @@ class ICIERebalancer:
         avail_ngn = refreshed.get('ngn_reserve', Decimal('0'))
         total_def = sum(b['val'] for b in buys)
         if avail_ngn < MIN_FIAT_NGN or total_def <= 0:
-            return {"status": "SUCCESS_PHASE1_ONLY", "executed_sells": executed_sells, "executed_buys": 0}
+            return {"status": "MAKER_SELL_RESTING_AWAITING_FILL", "executed_sells": executed_sells, "executed_buys": 0}
 
         deployable = min(avail_ngn, total_def)
         for b in buys:
             if trades >= 4:
                 break
             coin, pair = b['coin'], f"{b['coin']}NGN"
-            ask = refreshed.get('market_tickers', {}).get(coin, {}).get('ask') or refreshed['spot_prices'][coin]
+            ticker = refreshed.get('market_tickers', {}).get(coin, {})
+            buy_px = self._maker_price(ticker, refreshed['spot_prices'][coin], "BUY")
             alloc = deployable * (b['val'] / total_def)
-            qty = ((alloc / (Decimal('1') + LUNO_FEE + Decimal('0.002'))) / ask).quantize(PAIR_PRECISION[coin], rounding=ROUND_DOWN)
-            notional = qty * ask
+            qty = ((alloc / (Decimal('1') + EST_FEE_BUFFER)) / buy_px).quantize(PAIR_PRECISION[coin], rounding=ROUND_DOWN)
+            notional = qty * buy_px
             if qty < MIN_BASE_VOLUMES[coin] or notional < MIN_FIAT_NGN:
                 continue
 
-            res = self.order_executor.execute_limit_order(pair=pair, side="BUY", target_val=float(notional), current_price=float(ask), volume=str(qty))
+            res = self.order_executor.execute_limit_order(
+                pair=pair,
+                side="BUY",
+                target_val=float(notional),
+                current_price=float(buy_px),
+                volume=str(qty),
+                custom_limit_price=float(buy_px)
+            )
             if res.get("status") == "SUCCESS":
                 executed_buys += 1
                 trades += 1
-                _record_audit("LUNO", pair, "BUY", str(qty), float(ask), float(notional), f"SUCCESS:{res.get('order_id')}")
+                _record_audit("LUNO", pair, "BUY", str(qty), float(buy_px), float(notional), f"PLACED:{res.get('order_id')}")
 
         return {"status": "SUCCESS", "executed_sells": executed_sells, "executed_buys": executed_buys}
 
