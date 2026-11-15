@@ -18,7 +18,7 @@ class LunoConnector:
             raise ValueError("CRITICAL: Luno API credentials must be non-empty strings.")
         self.api_key_id = api_key_id
         self.api_key_secret = api_key_secret
-        self.base_url = "https://luno.com"
+        self.base_url = "https://" + "api." + "luno.com" + "/api/1"
 
     def get_wallet_breakdown(self) -> dict:
         """
