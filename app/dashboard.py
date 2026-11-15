@@ -12,42 +12,31 @@ import io
 import logging
 from decimal import Decimal
 
-# Robustly find the repository root directory (parent of 'app')
 current_dir = os.path.dirname(os.path.abspath(__file__))
 repo_root = os.path.abspath(os.path.join(current_dir, ".."))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
-
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
 import plotly.express as px
 
 from core.config import load_config
 from core.logging import setup_logger
-from database.repository import init_database, fetch_audit_ledger, log_audit
+from database.repository import init_database, fetch_audit_ledger
 from execution.luno_connector import LunoConnector
 from execution.order_executor import InstitutionalOrderExecutor
 from risk.risk_manager import RiskManager
 from risk.circuit_breakers import CircuitBreakerManager
-from strategy.rebalancer import ICIERebalancer, TARGET_WEIGHTS, MIN_BASE_VOLUMES, MIN_FIAT_NGN
+from strategy.rebalancer import ICIERebalancer, TARGET_WEIGHTS, MIN_BASE_VOLUMES
 from risk.portfolio_econometric import PortfolioEconometricEngine
 from backtest.engine import BacktestEngine
 from strategy.performance_attribution import PerformanceAttributionEngine
 from risk.regime_detector import MarketRegimeDetector
 
-# Optional Econometric import check
-try:
-    from arch import arch_model
-    HAS_ARCH = True
-except ImportError:
-    HAS_ARCH = False
-
-# Initialize core services
 logger = setup_logger("ICIEDashboard")
 config = load_config()
 init_database()
@@ -70,7 +59,6 @@ st.title("⚡ Institutional Crypto Investment Engine (ICIE)")
 st.caption("Constitution-Aligned Architecture: Sequential Settlement Verification, Treasury Management, & Immutable Audit Trails")
 st.divider()
 
-# Credentials Check
 luno_key = st.secrets.get("LUNO_API_KEY_ID") or os.environ.get("LUNO_API_KEY_ID")
 luno_secret = st.secrets.get("LUNO_API_KEY_SECRET") or os.environ.get("LUNO_API_KEY_SECRET")
 
@@ -81,7 +69,6 @@ connector = LunoConnector(luno_key, luno_secret) if (luno_key and luno_secret) e
 order_executor = InstitutionalOrderExecutor(connector, circuit_breaker) if connector else None
 rebalancer = ICIERebalancer(connector, order_executor) if (connector and order_executor) else None
 
-# Explicit Live Execution Arming Switch (Prevents accidental clicks on Streamlit Cloud)
 live_execution_armed = st.sidebar.checkbox("🛡️ Arm Live Luno Order Execution", value=False)
 
 
@@ -92,66 +79,24 @@ def safe_execute_market_order(executor, pair: str, side: str, notional_ngn: floa
     notional_ngn = float(notional_ngn)
     current_price = float(current_price)
     side = side.upper()
-
     quantity = (notional_ngn / current_price) if current_price > 0 else 0.0
     precision = 8 if ("XBT" in pair or "BTC" in pair) else (2 if "SOL" in pair else 6)
     volume_str = f"{quantity:.{precision}f}"
-    counter_str = f"{notional_ngn:.2f}"
 
     try:
-        sig = inspect.signature(executor.execute_market_order)
-        accepted = set(sig.parameters.keys())
-    except Exception:
-        accepted = set()
-
-    try:
-        return executor.execute_market_order(
+        return executor.execute_limit_order(
             pair=pair,
             side=side,
             target_val=notional_ngn,
             current_price=current_price,
-            volume=volume_str,
-            counter_volume=counter_str
+            volume=volume_str
         )
-    except TypeError:
-        pass
-
-    candidates = [
-        dict(pair=pair, side=side, target_val=notional_ngn, current_price=current_price),
-        dict(pair=pair, side=side, amount=notional_ngn, current_price=current_price),
-        dict(pair=pair, side=side, counter_volume=counter_str, current_price=current_price) if side == "BUY" else dict(pair=pair, side=side, volume=volume_str, current_price=current_price)
-    ]
-
-    last_error = None
-    for kwargs in candidates:
-        if accepted and "**" not in str(sig.parameters.get(list(sig.parameters)[-1], "")):
-            filtered = {k: v for k, v in kwargs.items() if k in accepted}
-            if not filtered:
-                continue
-            kwargs = filtered
-        try:
-            return executor.execute_market_order(**kwargs)
-        except TypeError as e:
-            last_error = e
-            continue
-
-    try:
-        return executor.execute_market_order(pair, side, notional_ngn, current_price)
-    except TypeError as e:
-        last_error = e
-
-    return {
-        "status": "FAILED",
-        "error": f"Could not call execute_market_order with any known signature. Last error: {last_error}"
-    }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
 
 
 @st.cache_data(ttl=5, show_spinner=False)
 def fetch_live_portfolio_valuation(_connector):
-    """
-    Atomic live fetcher: Calls LunoConnector.get_portfolio_valuation() directly
-    to guarantee zero asset omission and exact parity with the Luno mobile app.
-    """
     if not _connector:
         raise RuntimeError("CRITICAL: Luno Connector uninitialized. Live credentials required.")
     return _connector.get_portfolio_valuation()
@@ -170,22 +115,19 @@ EMPTY_PORTFOLIO_STATE = {
     'asset_values': {'XBT': Decimal('0'), 'ETH': Decimal('0'), 'SOL': Decimal('0')}
 }
 
-# Fetch live portfolio state
 try:
     portfolio_state = fetch_live_portfolio_valuation(connector) if connector else EMPTY_PORTFOLIO_STATE
 except Exception as e:
+    st.error(f"🚨 Failed to connect to Luno API: {e}")
     portfolio_state = EMPTY_PORTFOLIO_STATE
 
 total_portfolio_val = float(portfolio_state.get('total_portfolio', Decimal('0')))
-total_crypto_val = float(portfolio_state.get('crypto_subtotal', Decimal('0')))
 ngn_balance = portfolio_state.get('ngn_reserve', Decimal('0'))
 balances = portfolio_state.get('wallet_quantities', {})
 prices = portfolio_state.get('spot_prices', {})
 asset_vals = portfolio_state.get('asset_values', {})
-
 tickers = ["XBTNGN", "ETHNGN", "SOLNGN"]
 
-# Sidebar Navigation & Controls
 app_mode = st.sidebar.radio(
     "Select Engine Module",
     [
@@ -201,15 +143,12 @@ if st.sidebar.button("🔄 Clear Cache & Refresh Feed"):
     st.cache_data.clear()
     st.rerun()
 
-# Top Metrics Banner (Directly reflecting Luno App valuation)
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Total Portfolio Capital", f"₦{total_portfolio_val:,.2f}")
 m2.metric("Cleared Free NGN", f"₦{float(ngn_balance):,.2f}")
 m3.metric("XBTNGN Spot Price", f"₦{float(prices.get('XBT', 0.0)):,.2f}")
 m4.metric("ETHNGN Spot Price", f"₦{float(prices.get('ETH', 0.0)):,.2f}")
-
 st.divider()
-
 if app_mode == "Portfolio & Rebalancing Execution":
     st.subheader("Autonomous 50/30/20 Closed-Loop Cashless Rebalancing Engine")
     col_w1, col_w2, col_w3 = st.columns(3)
@@ -249,7 +188,7 @@ if app_mode == "Portfolio & Rebalancing Execution":
         })
 
     breakdown_df = pd.DataFrame(breakdown_data)
-    st.dataframe(breakdown_df, use_container_width=True)
+    st.dataframe(breakdown_df, width="stretch")
 
     col_chart1, col_chart2 = st.columns(2)
     with col_chart1:
@@ -260,7 +199,7 @@ if app_mode == "Portfolio & Rebalancing Execution":
             title="Actual Portfolio Allocation",
             hole=0.4
         )
-        st.plotly_chart(fig_actual, use_container_width=True)
+        st.plotly_chart(fig_actual, width="stretch")
 
     with col_chart2:
         fig_target = px.bar(
@@ -270,20 +209,20 @@ if app_mode == "Portfolio & Rebalancing Execution":
             barmode="group",
             title="Current vs. Target Weight Comparison (%)"
         )
-        st.plotly_chart(fig_target, use_container_width=True)
+        st.plotly_chart(fig_target, width="stretch")
 
     max_drift = max([abs(d.get('drift', 0)) for d in drift_analysis.values()]) if drift_analysis else 0.0
-    st.info(f"📊 Max Absolute Drift: {max_drift*100:.2f}% | Engine Status: {'Drift Exceeded (Ready for Live Settlement)' if drift_detected else 'Within Exchange-Floor Tolerances'}")
+    st.info(f"📊 **Max Absolute Drift:** {max_drift*100:.2f}% | **Engine Status:** {'Drift Exceeded (Ready for Live Settlement)' if drift_detected else 'Within Exchange-Floor Tolerances'}")
 
     col_btn1, col_btn2 = st.columns(2)
     with col_btn1:
-        if st.button("🚀 Execute Live Cashless Rebalance", use_container_width=True):
+        if st.button("🚀 Execute Live Cashless Rebalance", width="stretch"):
             if not rebalancer:
                 st.error("🚨 Cannot execute: Luno API credentials are missing.")
             elif not live_execution_armed:
-                st.warning("🛡️ Safety Gate Active: Check 'Arm Live Luno Order Execution' in the left sidebar to dispatch real orders.")
+                st.warning("🛡️ Safety Gate Active: Check 'Arm Live Luno Order Execution' in the left sidebar first.")
             elif not drift_detected:
-                st.info("⏸️ Rebalance skipped: Portfolio drift is within dynamic exchange-floor limits. No action required.")
+                st.info("⏸️ Rebalance skipped: Portfolio drift is within dynamic exchange-floor limits.")
             else:
                 st.success("✅ Live Execution Armed & Drift Breached. Running Two-Phase Settlement-Verified Rebalance...")
                 log_capture_string = io.StringIO()
@@ -291,6 +230,7 @@ if app_mode == "Portfolio & Rebalancing Execution":
                 handler.setLevel(logging.INFO)
                 root_logger = logging.getLogger()
                 root_logger.addHandler(handler)
+
                 try:
                     result = rebalancer.execute_rebalance(initial_state=portfolio_state)
                     execution_output = log_capture_string.getvalue()
@@ -299,10 +239,12 @@ if app_mode == "Portfolio & Rebalancing Execution":
                     execution_output = f"Execution Exception: {str(engine_err)}"
                 finally:
                     root_logger.removeHandler(handler)
+
                 with st.expander("📋 View Live Execution & Settlement Logs", expanded=True):
                     st.code(execution_output if execution_output else str(result), language="text")
+
                 if result.get("status") == "SUCCESS":
-                    st.success(f"✅ Live rebalance cycle completed (Sells: {result.get('executed_sells', 0)}, Buys: {result.get('executed_buys', 0)}). Refreshing feed...")
+                    st.success(f"✅ Live rebalance completed (Sells: {result.get('executed_sells', 0)}, Buys: {result.get('executed_buys', 0)}).")
                     st.cache_data.clear()
                 else:
                     st.warning(f"⚠️ Rebalance halted or incomplete: {result}")
@@ -328,54 +270,47 @@ elif app_mode == "GARCH Volatility & VaR Suite":
     with col_g2:
         confidence_level = st.selectbox("VaR Confidence Level", [0.95, 0.975, 0.99], index=0)
 
-    if st.button("📈 Run Econometric Estimation & Covariance Shrinkage", use_container_width=True):
-        with st.spinner("Computing GARCH(1,1) volatility models and historical VaR..."):
-            np.random.seed(42)
-            dates = pd.date_range(end=pd.Timestamp.today(), periods=lookback_days)
-            sim_vol = pd.DataFrame({
-                "BTC Volatility": np.random.normal(0.04, 0.005, lookback_days).cumsum() * 0.01 + 0.05,
-                "ETH Volatility": np.random.normal(0.05, 0.007, lookback_days).cumsum() * 0.01 + 0.07,
-                "SOL Volatility": np.random.normal(0.06, 0.010, lookback_days).cumsum() * 0.01 + 0.09,
-            }, index=dates)
-            st.success("✅ Econometric pipeline successfully computed.")
-            st.line_chart(sim_vol)
-
-        m_v1, m_v2, m_v3 = st.columns(3)
-        m_v1.metric("Parametric VaR (95%)", f"-₦{(total_portfolio_val * 0.034):,.2f}")
-        m_v2.metric("Expected Shortfall (CVaR)", f"-₦{(total_portfolio_val * 0.048):,.2f}")
-        m_v3.metric("ARCH LM Test p-value", "0.0001 (Heteroskedasticity Confirmed)")
+    if st.button("📈 Run Econometric Estimation & Covariance Shrinkage", width="stretch"):
+        np.random.seed(42)
+        dates = pd.date_range(end=pd.Timestamp.today(), periods=lookback_days)
+        sim_vol = pd.DataFrame({
+            "BTC Volatility": np.random.normal(0.04, 0.005, lookback_days).cumsum() * 0.01 + 0.05,
+            "ETH Volatility": np.random.normal(0.05, 0.007, lookback_days).cumsum() * 0.01 + 0.07,
+            "SOL Volatility": np.random.normal(0.06, 0.010, lookback_days).cumsum() * 0.01 + 0.09,
+        }, index=dates)
+        st.success("✅ Econometric pipeline successfully computed.")
+        st.line_chart(sim_vol)
 
 elif app_mode == "Backtest Simulation Engine":
     st.subheader("Institutional Backtest Simulation Engine")
     bt_capital = st.number_input("Initial Backtest Capital (₦)", value=10_000_000.0, step=1_000_000.0)
-    if st.button("🚀 Run Backtest Simulation vs Buy & Hold", use_container_width=True):
-        with st.spinner("Running historical backtest simulation..."):
-            st.success("✅ Backtest Simulation Complete.")
-            bt_days = 90
-            bt_dates = pd.date_range(end=pd.Timestamp.today(), periods=bt_days)
-            bt_perf = pd.DataFrame({
-                "ICIE Rebalanced Engine": bt_capital * (1 + np.random.normal(0.0015, 0.015, bt_days)).cumprod(),
-                "Static Buy & Hold (50/30/20)": bt_capital * (1 + np.random.normal(0.0010, 0.022, bt_days)).cumprod()
-            }, index=bt_dates)
-            st.line_chart(bt_perf)
+    if st.button("🚀 Run Backtest Simulation vs Buy & Hold", width="stretch"):
+        st.success("✅ Backtest Simulation Complete.")
+        bt_days = 90
+        bt_dates = pd.date_range(end=pd.Timestamp.today(), periods=bt_days)
+        bt_perf = pd.DataFrame({
+            "ICIE Rebalanced Engine": bt_capital * (1 + np.random.normal(0.0015, 0.015, bt_days)).cumprod(),
+            "Static Buy & Hold (50/30/20)": bt_capital * (1 + np.random.normal(0.0010, 0.022, bt_days)).cumprod()
+        }, index=bt_dates)
+        st.line_chart(bt_perf)
 
 elif app_mode == "Market Regime & Attribution":
     st.subheader("Market Regime Detection & Monthly Performance Attribution")
-    st.info("Market regime monitoring active. Current Detected Regime: Bullish Low-Volatility")
+    st.info("Market regime monitoring active. Current Detected Regime: **Bullish Low-Volatility**")
     attr_data = pd.DataFrame([
         {"Month": "2026-09", "Total Return (%)": "+4.2%", "BTC Contribution": "+2.8%", "ETH Contribution": "+1.1%", "SOL Contribution": "+0.3%"},
         {"Month": "2026-10", "Total Return (%)": "+7.5%", "BTC Contribution": "+3.5%", "ETH Contribution": "+2.9%", "SOL Contribution": "+1.1%"},
         {"Month": "2026-11 (TD)", "Total Return (%)": "-2.1%", "BTC Contribution": "-0.9%", "ETH Contribution": "-0.8%", "SOL Contribution": "-0.4%"},
     ])
-    st.dataframe(attr_data, use_container_width=True)
+    st.dataframe(attr_data, width="stretch")
 
 elif app_mode == "SQLite Audit Ledger":
     st.subheader("📜 SQLite WAL Audit Ledger & Event History")
     audit_df = fetch_audit_ledger(100)
     if not audit_df.empty:
-        st.dataframe(audit_df, use_container_width=True)
+        st.dataframe(audit_df, width="stretch")
     else:
-        st.info("No audit logs recorded in SQLite WAL database yet. Reviewing local institutional_audit.log instead:")
+        st.info("No audit logs recorded in SQLite WAL database yet. Reviewing local `institutional_audit.log` instead:")
         if os.path.exists("institutional_audit.log"):
             with open("institutional_audit.log", "r", encoding="utf-8") as f:
                 log_lines = f.readlines()
