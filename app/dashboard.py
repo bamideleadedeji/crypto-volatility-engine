@@ -257,7 +257,7 @@ if app_mode == "Portfolio & Rebalancing Execution":
         fig_actual = px.pie(
             breakdown_df,
             names="Asset Pair",
-            values="Market Value (₦)",
+values="Market Value (₦)",
 title="Actual Portfolio Allocation",
 hole=0.4
 )
