@@ -1,7 +1,7 @@
 """
 Institutional Crypto Investment Engine (ICIE) - Luno API Connector
 Enforces strict exchange authentication, BID/ASK order side mapping, decimal precision,
-free + reserved wallet tracking, order-book spread inspection, and secure order dispatch.
+multi-wallet aggregation (Spot + Savings/Staking), order-book spread inspection, and order dispatch.
 """
 
 import logging
@@ -26,17 +26,22 @@ class LunoConnector:
             raise RuntimeError(f"Luno API Error {response.status_code}: {response.text[:300]}")
 
         balances = response.json().get('balance', [])
-        breakdown = {}
+        breakdown = {
+            'XBT': {'free': Decimal('0'), 'reserved': Decimal('0'), 'total': Decimal('0')},
+            'ETH': {'free': Decimal('0'), 'reserved': Decimal('0'), 'total': Decimal('0')},
+            'SOL': {'free': Decimal('0'), 'reserved': Decimal('0'), 'total': Decimal('0')},
+            'NGN': {'free': Decimal('0'), 'reserved': Decimal('0'), 'total': Decimal('0')}
+        }
         for item in balances:
-            asset = item.get('asset')
-            if asset in ['XBT', 'ETH', 'SOL', 'NGN']:
-                free = Decimal(str(item.get('balance', '0')))
-                reserved = Decimal(str(item.get('reserved', '0')))
-                breakdown[asset] = {'free': free, 'reserved': reserved, 'total': free + reserved}
+            asset = str(item.get('asset', '')).upper()
+            free = Decimal(str(item.get('balance', '0')))
+            reserved = Decimal(str(item.get('reserved', '0')))
+            if asset not in breakdown:
+                breakdown[asset] = {'free': Decimal('0'), 'reserved': Decimal('0'), 'total': Decimal('0')}
+            breakdown[asset]['free'] += free
+            breakdown[asset]['reserved'] += reserved
+            breakdown[asset]['total'] += (free + reserved)
 
-        for required in ['XBT', 'ETH', 'SOL', 'NGN']:
-            if required not in breakdown:
-                breakdown[required] = {'free': Decimal('0'), 'reserved': Decimal('0'), 'total': Decimal('0')}
         return breakdown
 
     def get_balances(self) -> dict:
@@ -59,6 +64,7 @@ class LunoConnector:
             spread_pct = ((ask - bid) / ask) if ask > 0 else Decimal('0')
             tickers[coin] = {'pair': pair, 'last_trade': last_trade, 'bid': bid, 'ask': ask, 'spread_pct': spread_pct}
         return tickers
+
 
     def get_spot_prices(self) -> dict:
         tickers = self.get_market_tickers()
