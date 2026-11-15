@@ -1,18 +1,21 @@
+---
+
+### File 4 of 4: `scripts/luno_institutional_engine.py`
+
+```python
 #!/usr/bin/env python3
 """
 ICIE Autonomous Institutional Engine (Luno Live Production Node)
 Author: Bamidele Adedeji, Principal Consultant (Bamidele & Associates)
-Objective: Institutional Crypto Investment & Cashless Self-Rebalancing (50% BTC, 30% ETH, 20% SOL)
-Architecture: Constitution-Aligned Sequential Settlement Verification, Treasury Management, & Immutable Audit Trails
+Objective: Live Institutional Crypto Investment & Cashless Self-Rebalancing (50% BTC, 30% ETH, 20% SOL)
+Architecture: Zero-Simulation Production Node with Sequential Settlement Verification & Dual Audit Trails
 """
 
 import os
 import sys
-import time
-import logging
 import pandas as pd
 from datetime import datetime
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal
 
 # ==========================================
 # 0. ABSOLUTE PATH RESOLUTION & LOG INITIALIZATION
@@ -30,99 +33,84 @@ if not os.path.exists(TRADE_LOG_FILE):
 
 if not os.path.exists(LOG_FILE):
     with open(LOG_FILE, "w", encoding="utf-8") as f:
-        f.write(f"{datetime.utcnow().isoformat()} [INFO] ICIE Audit Log Initialized.\n")
+        f.write(f"{datetime.utcnow().isoformat()} [INFO] ICIE Live Audit Log Initialized.\n")
 
 from core.config import load_config
 from core.logging import setup_logger
-from database.repository import init_database, log_audit, get_paper_portfolio, update_paper_portfolio, record_order
+from database.repository import init_database, log_audit
 from execution.luno_connector import LunoConnector
 from execution.order_executor import InstitutionalOrderExecutor
 from risk.circuit_breakers import CircuitBreakerManager
-from strategy.rebalancer import ICIERebalancer, TARGET_WEIGHTS, AutonomousRebalancer
+from strategy.rebalancer import ICIERebalancer, TARGET_WEIGHTS
 
 # ==========================================
-# 1. INITIALIZATION & CONFIGURATION
+# 1. INITIALIZATION & STRICT LIVE CREDENTIAL GATE
 # ==========================================
 logger = setup_logger("ICIEEngine")
 
-# Luno Exchange Minimum Base Volume Limits (Strict Exchange Compliance)
-MIN_BASE_VOLUMES = {
-    "XBTNGN": Decimal('0.0005'),
-    "ETHNGN": Decimal('0.005'),
-    "SOLNGN": Decimal('0.05')
-}
-
-MIN_ORDER_NGN = Decimal('50.00')
-LUNO_TAKER_FEE = Decimal('0.0075')  # 0.75% taker fee
-AGGRESSIVE_LIMIT_BUFFER = Decimal('0.0015')  # 0.15% aggressive price cross
 
 def run_institutional_engine():
     """
-    Executes the ICIE Closed-Loop Two-Phase Autonomous Rebalancing Engine.
-    Enforces strict live fetching, balance + reserved wallet aggregation via LunoConnector,
-    Decimal precision arithmetic, and SQLite WAL immutable audit trails.
+    Executes the Live ICIE Closed-Loop Two-Phase Cashless Rebalancing Engine.
+    Strictly enforces live Luno API connectivity—aborts via Circuit Breaker if credentials
+    are missing or exchange telemetry fails. Zero simulation code.
     """
     logger.info("[START] Initializing ICIE Autonomous Institutional Engine (Luno Live Production Node)...")
-    
+
     init_database()
     config = load_config()
-    
+
     luno_key = os.environ.get("LUNO_API_KEY_ID")
     luno_secret = os.environ.get("LUNO_API_KEY_SECRET")
-    
-    paper_mode = config.get("paper_mode", False)
+
     if not luno_key or not luno_secret:
-        logger.warning("⚠️ Luno API credentials not found in environment. Forcing Paper Trading / Simulation Mode.")
-        paper_mode = True
-
-    connector = LunoConnector(luno_key, luno_secret) if (luno_key and luno_secret) else None
-    circuit_breaker = CircuitBreakerManager()
-    order_executor = InstitutionalOrderExecutor(connector, circuit_breaker) if connector else None
-    
-    # Target weights matching the ICIE Constitution (BTC 50%, ETH 30%, SOL 20%)
-    target_weights_dict = config.get("target_weights", {"XBTNGN": 0.50, "ETHNGN": 0.30, "SOLNGN": 0.20})
-    
-    rebalancer = ICIERebalancer(
-        connector=connector,
-        order_executor=order_executor,
-        dry_run=paper_mode,
-        target_weights=TARGET_WEIGHTS
-    )
-
-    tickers = ["XBTNGN", "ETHNGN", "SOLNGN"]
-    
-    # ==========================================
-    # 2. FETCH REAL LIVE VALUATION & WALLET BALANCES (ATOMIC)
-    # ==========================================
-    logger.info("[LUNO API] Querying live exchange portfolio valuation and wallet balances...")
-    
-    try:
-        if connector and not paper_mode:
-            # Atomic portfolio valuation utilizing verified LunoConnector methods
-            portfolio_state = connector.get_portfolio_valuation()
-        else:
-            if not paper_mode:
-                raise RuntimeError("CRITICAL: Live mode requested, but Luno connector is uninitialized.")
-            logger.info("[PAPER MODE] Initializing simulated portfolio state...")
-            initial_cash = Decimal('1500.00')
-            initial_units = {"XBT": Decimal('0.00025'), "ETH": Decimal('0.0065'), "SOL": Decimal('0.05')}
-            ngn_res, units_dict = get_paper_portfolio(float(initial_cash), {k+"NGN": float(v) for k, v in initial_units.items()})
-            
-            spot_dict = {'XBT': Decimal('101425618.00'), 'ETH': Decimal('2780346.00'), 'SOL': Decimal('220000.00')}
-            crypto_sub = sum(Decimal(str(units_dict.get(k+"NGN", 0))) * spot_dict[k] for k in ['XBT', 'ETH', 'SOL'])
-            
-            portfolio_state = {
-                'total_portfolio': Decimal(str(ngn_res)) + crypto_sub,
-                'crypto_subtotal': crypto_sub,
-                'ngn_reserve': Decimal(str(ngn_res)),
-                'wallet_quantities': {'XBT': Decimal(str(units_dict.get("XBTNGN", 0))), 'ETH': Decimal(str(units_dict.get("ETHNGN", 0))), 'SOL': Decimal(str(units_dict.get("SOLNGN", 0))), 'NGN': Decimal(str(ngn_res))},
-                'spot_prices': spot_dict,
-                'asset_values': {k: Decimal(str(units_dict.get(k+"NGN", 0))) * spot_dict[k] for k in ['XBT', 'ETH', 'SOL']}
-            }
-    except Exception as e:
-        logger.error(f"CRITICAL: Failed to retrieve portfolio state from exchange: {e}")
+        logger.error("CRITICAL [CIRCUIT BREAKER]: LUNO_API_KEY_ID or LUNO_API_KEY_SECRET missing from environment. Aborting live execution.")
         try:
-            log_audit(venue="ICIE", asset="SYSTEM", price=0.0, amount=0.0, units="N/A", status=f"Valuation fetch failed: {str(e)}")
+            log_audit(
+                venue="ICIE",
+                asset="SYSTEM",
+                price=0.0,
+                amount=0.0,
+                units="N/A",
+                status="CIRCUIT_BREAKER_ABORT: Missing Luno API credentials"
+            )
+        except Exception:
+            pass
+        sys.exit(1)
+
+    try:
+        connector = LunoConnector(luno_key, luno_secret)
+        circuit_breaker = CircuitBreakerManager()
+        order_executor = InstitutionalOrderExecutor(connector, circuit_breaker)
+        target_weights_cfg = config.get("target_weights", TARGET_WEIGHTS)
+
+        rebalancer = ICIERebalancer(
+            connector=connector,
+            order_executor=order_executor,
+            target_weights=target_weights_cfg
+        )
+    except Exception as init_err:
+        logger.error(f"CRITICAL: Engine initialization failed: {init_err}")
+        sys.exit(1)
+
+    # ==========================================
+    # 2. FETCH REAL LIVE VALUATION & ORDER BOOK TELEMETRY
+    # ==========================================
+    logger.info("[LUNO API] Querying live exchange portfolio valuation, wallet breakdown, and order-book spreads...")
+
+    try:
+        portfolio_state = connector.get_portfolio_valuation()
+    except Exception as e:
+        logger.error(f"CRITICAL [CIRCUIT BREAKER]: Failed to retrieve live portfolio state from Luno: {e}")
+        try:
+            log_audit(
+                venue="ICIE",
+                asset="SYSTEM",
+                price=0.0,
+                amount=0.0,
+                units="N/A",
+                status=f"CIRCUIT_BREAKER_ABORT: Valuation fetch failed - {str(e)}"
+            )
         except Exception:
             pass
         sys.exit(1)
@@ -130,33 +118,23 @@ def run_institutional_engine():
     total_portfolio = portfolio_state.get('total_portfolio', Decimal('0'))
     ngn_reserve = portfolio_state.get('ngn_reserve', Decimal('0'))
     asset_vals = portfolio_state.get('asset_values', {})
-    spot_prices = portfolio_state.get('spot_prices', {})
-    balances = portfolio_state.get('wallet_quantities', {})
+    tickers = portfolio_state.get('market_tickers', {})
 
     if total_portfolio <= 0:
-        logger.error("CRITICAL: Total portfolio capital evaluated to zero or negative. Aborting execution.")
+        logger.error("CRITICAL: Total live portfolio capital evaluated to zero or negative. Aborting execution.")
         sys.exit(1)
 
-    logger.info(f"[AUDIT] Live Portfolio Capital (TPV): ₦{total_portfolio:,.2f} | Liquid NGN Reserve: ₦{ngn_reserve:,.2f}")
-    logger.info(f"[AUDIT] Asset Market Values -> BTC: ₦{asset_vals.get('XBT', 0):,.2f} | ETH: ₦{asset_vals.get('ETH', 0):,.2f} | SOL: ₦{asset_vals.get('SOL', 0):,.2f}")
+    logger.info(f"[AUDIT] Live Portfolio Capital (TPV): ₦{total_portfolio:,.2f} | Free Cleared NGN: ₦{ngn_reserve:,.2f}")
+    logger.info(
+        f"[AUDIT] Live Holdings -> BTC: ₦{asset_vals.get('XBT', 0):,.2f} | "
+        f"ETH: ₦{asset_vals.get('ETH', 0):,.2f} | SOL: ₦{asset_vals.get('SOL', 0):,.2f}"
+    )
 
-    # Convert asset valuation into pair-based pricing for legacy audit compatibility
-    prices = {
-        "XBTNGN": float(spot_prices.get('XBT', 0)),
-        "ETHNGN": float(spot_prices.get('ETH', 0)),
-        "SOLNGN": float(spot_prices.get('SOL', 0))
-    }
-    
-    holdings_units = {
-        "XBTNGN": float(balances.get('XBT', 0)),
-        "ETHNGN": float(balances.get('ETH', 0)),
-        "SOLNGN": float(balances.get('SOL', 0))
-    }
-    
-    curr_weights_pct = {
-        pair: (float(asset_vals.get(pair.replace("NGN","").replace("XBT","XBT"), Decimal('0'))) / float(total_portfolio) * 100) if total_portfolio > 0 else 0.0 
-        for pair in tickers
-    }
+    for coin, t_info in tickers.items():
+        logger.info(
+            f"[ORDER BOOK] {t_info['pair']}: Bid ₦{t_info['bid']:,.2f} | "
+            f"Ask ₦{t_info['ask']:,.2f} | Spread {t_info['spread_pct']*100:.2f}%"
+        )
 
     # ==========================================
     # 3. EVALUATE REBALANCE DRIFT
@@ -164,23 +142,16 @@ def run_institutional_engine():
     drift_detected, drift_analysis = rebalancer.evaluate_drift(portfolio_state)
     max_drift = max([abs(d.get('drift', 0)) for d in drift_analysis.values()]) if drift_analysis else 0.0
 
+    for asset, stats in drift_analysis.items():
+        logger.info(
+            f"[DRIFT AUDIT] {asset}: Actual {stats['actual_weight']*100:.2f}% vs "
+            f"Target {stats['target_weight']*100:.2f}% | Drift: {stats['drift']*100:+.2f}% | "
+            f"Threshold: {stats['dynamic_threshold']*100:.2f}% | Breached: {stats['breached']}"
+        )
+
     if not drift_detected:
-        logger.info(f"[REBALANCE] Portfolio drift ({max_drift*100:.2f}%) is within exchange-floor tolerance. Holding position.")
-        logger.info("[COMPLETE] Institutional rebalancing audit cycle finished successfully.")
-        try:
-            log_audit(venue="ICIE", asset="PORTFOLIO", price=0.0, amount=float(total_portfolio), units="N/A", status="NO_DRIFT_HOLD")
-        except Exception:
-            pass
-        return
-
-    logger.info(f"✅ Drift exceeds threshold (Max Drift: {max_drift*100:.2f}%). Initiating Two-Phase Cashless Rebalance Sequence.")
-
-    # ==========================================
-    # 4. EXECUTE TWO-PHASE CASHLESS REBALANCE VIA REBALANCER MODULE
-    # ==========================================
-    try:
-        rebalance_result = rebalancer.execute_rebalance()
-        logger.info(f"[EXECUTION COMPLETE] ICIE Rebalance Result: {rebalance_result}")
+        logger.info(f"[REBALANCE] Portfolio drift ({max_drift*100:.2f}%) is within Constitution & exchange-floor tolerance. Holding position.")
+        logger.info("[COMPLETE] Live institutional audit cycle finished successfully.")
         try:
             log_audit(
                 venue="ICIE",
@@ -188,12 +159,33 @@ def run_institutional_engine():
                 price=0.0,
                 amount=float(total_portfolio),
                 units="N/A",
-                status=f"REBALANCE_SUCCESS: {rebalance_result.get('status', 'COMPLETED')}"
+                status="NO_DRIFT_HOLD"
+            )
+        except Exception:
+            pass
+        return
+
+    logger.info(f"✅ Drift threshold breached (Max Drift: {max_drift*100:.2f}%). Initiating Live Cashless Self-Rebalance Sequence.")
+
+    # ==========================================
+    # 4. EXECUTE LIVE TWO-PHASE CASHLESS REBALANCE
+    # ==========================================
+    try:
+        rebalance_result = rebalancer.execute_rebalance(initial_state=portfolio_state)
+        logger.info(f"[EXECUTION COMPLETE] ICIE Live Rebalance Result: {rebalance_result}")
+        try:
+            log_audit(
+                venue="ICIE",
+                asset="PORTFOLIO",
+                price=0.0,
+                amount=float(total_portfolio),
+                units="N/A",
+                status=f"REBALANCE_CYCLE_RESULT: {rebalance_result.get('status', 'COMPLETED')}"
             )
         except Exception:
             pass
     except Exception as exec_err:
-        logger.error(f"CRITICAL: Rebalance execution sequence failed: {exec_err}")
+        logger.error(f"CRITICAL: Live rebalance execution sequence failed: {exec_err}")
         try:
             log_audit(
                 venue="ICIE",
@@ -206,6 +198,7 @@ def run_institutional_engine():
         except Exception:
             pass
         sys.exit(1)
+
 
 if __name__ == "__main__":
     run_institutional_engine()
