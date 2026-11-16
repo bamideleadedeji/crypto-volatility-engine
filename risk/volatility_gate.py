@@ -1,17 +1,31 @@
 """
 Institutional Crypto Investment Engine (ICIE) - Phase B Volatility & Trend Regime Gate
-Fetches real hourly OHLC candles from Luno /api/1/candles to compute rolling volatility,
+Fetches real hourly OHLC candles from Luno /api/exchange/1/candles to compute rolling volatility,
 EWMA shock ratios, and momentum filters. Protects capital by halting Phase 2 dip-buys
 during active crash regimes while permitting Phase 1 profit-taking into NGN.
 """
 
+import os
 import math
 import time
 import logging
-from decimal import Decimal
 import requests
 
 logger = logging.getLogger("VolatilityRegimeGate")
+
+
+def _resolve_luno_auth() -> tuple[str, str] | None:
+    key_id = os.environ.get("LUNO_API_KEY_ID", "").strip()
+    key_secret = os.environ.get("LUNO_API_KEY_SECRET", "").strip()
+    if not key_id or not key_secret:
+        try:
+            import streamlit as st
+            luno_sec = st.secrets.get("luno", {}) if hasattr(st.secrets, "get") else {}
+            key_id = str(st.secrets.get("LUNO_API_KEY_ID", luno_sec.get("LUNO_API_KEY_ID", ""))).strip()
+            key_secret = str(st.secrets.get("LUNO_API_KEY_SECRET", luno_sec.get("LUNO_API_KEY_SECRET", ""))).strip()
+        except Exception:
+            pass
+    return (key_id, key_secret) if (key_id and key_secret) else None
 
 
 class VolatilityRegimeGate:
@@ -24,23 +38,57 @@ class VolatilityRegimeGate:
         self,
         max_annualized_vol: float = 1.35,   # 135% annualized hourly vol ceiling
         max_shock_ratio: float = 2.20,      # Short-term (12h) vs baseline (72h) vol spike ceiling
-        max_24h_drop_pct: float = -0.08     # Halt buying an asset if it fell >8% in 24h without bouncing
+        max_24h_drop_pct: float = -0.08,    # Halt buying an asset if it fell >8% in 24h without bouncing
+        api_key_id: str = "",
+        api_key_secret: str = ""
     ):
-        self.base_url = "https://" + "api." + "luno.com" + "/api/1"
+        self.base_url = "https://" + "api." + "luno.com" + "/api/exchange/1"
         self.max_annualized_vol = max_annualized_vol
         self.max_shock_ratio = max_shock_ratio
         self.max_24h_drop_pct = max_24h_drop_pct
+        self.headers = {
+            "Accept": "application/json",
+            "User-Agent": "ICIE-Portfolio-Engine/1.0",
+        }
+        if api_key_id and api_key_secret:
+            self.auth = (api_key_id.strip(), api_key_secret.strip())
+        else:
+            self.auth = _resolve_luno_auth()
 
     def _fetch_hourly_closes(self, pair: str, hours: int = 72) -> list[float]:
         since_ms = int((time.time() - (hours * 3600)) * 1000)
         endpoint = f"{self.base_url}/candles?pair={pair}&since={since_ms}&duration=3600"
-        response = requests.get(endpoint, timeout=15)
-        if response.status_code != 200:
-            raise RuntimeError(f"Luno candles HTTP {response.status_code} for {pair}: {response.text[:200]}")
 
-        candles = response.json().get("candles", [])
-        closes = [float(c["close"]) for c in candles if float(c.get("close", 0)) > 0]
-        return closes
+        last_err = None
+        for attempt in range(3):
+            try:
+                response = requests.get(
+                    endpoint,
+                    auth=self.auth,
+                    headers=self.headers,
+                    timeout=15
+                )
+                if response.status_code == 200:
+                    try:
+                        payload = response.json()
+                    except ValueError:
+                        preview = response.text[:150] if response.text else "<EMPTY BODY>"
+                        raise RuntimeError(f"Non-JSON response on {pair}: {preview}")
+
+                    candles = payload.get("candles", [])
+                    closes = [float(c["close"]) for c in candles if float(c.get("close", 0)) > 0]
+                    return closes
+
+                if response.status_code in (429, 500, 502, 503, 504):
+                    time.sleep(2 ** attempt)
+                    continue
+
+                raise RuntimeError(f"Luno candles HTTP {response.status_code} for {pair}: {response.text[:200]}")
+            except (requests.RequestException, RuntimeError) as exc:
+                last_err = exc
+                time.sleep(2 ** attempt)
+
+        raise RuntimeError(f"Candle fetch failed after retries for {pair}: {last_err}")
 
     @staticmethod
     def _compute_log_returns(closes: list[float]) -> list[float]:
