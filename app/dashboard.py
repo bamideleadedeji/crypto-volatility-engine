@@ -188,8 +188,8 @@ def evaluate_high_water_mark(current_portfolio_val: float, max_drawdown_pct: flo
             )
             peak_value = seed_peak
         else:
-            initial_invested = float(row)
-            peak_value = float(row)
+            initial_invested = float(row[0])
+            peak_value = float(row[1])
 
         if current_val > peak_value:
             peak_value = current_val
