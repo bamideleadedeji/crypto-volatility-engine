@@ -422,46 +422,49 @@ elif app_mode == "GARCH Volatility & VaR Suite":
                 st.line_chart(ewma_vol_pct)
 
                 m1, m2, m3 = st.columns(3)
+                m1.metric(f"Historical Daily VaR ({confidence_level*100:.1f}%)", f"{hist_var*100:.2f}%")
+                m2.metric(f"Parametric Daily VaR ({confidence_level*100:.1f}%)", f"{param_var*100:.2f}%")
+                m3.metric("Expected Shortfall / CVaR", f"{hist_cvar*100:.2f}%")
 
-m1.metric(f"Historical Daily VaR ({confidence_level100:.1f}%)", f"{hist_var100:.2f}%")
-m2.metric(f"Parametric Daily VaR ({confidence_level100:.1f}%)", f"{param_var100:.2f}%")
-m3.metric(f"Expected Shortfall / CVaR", f"{hist_cvar*100:.2f}%")
-st.caption("Empirical Return Correlation Matrix (BTC / ETH / SOL)")
-corr_df = recent_rets.rename(columns=lambda c: c.replace(" Volatility", "")).corr()
-st.dataframe(corr_df.style.format("{:.3f}"), use_container_width=True)
-except Exception as exc:
-st.error(f"Live Luno candle telemetry error: {exc}")
+                st.caption("Empirical Return Correlation Matrix (BTC / ETH / SOL)")
+                corr_df = recent_rets.rename(columns=lambda c: c.replace(" Volatility", "")).corr()
+                st.dataframe(corr_df.style.format("{:.3f}"), use_container_width=True)
+        except Exception as exc:
+            st.error(f"Live Luno candle telemetry error: {exc}")
+
 elif app_mode == "Backtest Simulation Engine":
-st.subheader("Institutional Backtest Simulation Engine")
-bt_capital = st.number_input("Initial Backtest Capital (₦)", value=10_000_000.0, step=1_000_000.0)
-if st.button("🚀 Run Backtest Simulation vs Buy & Hold", width="stretch"):
-st.success("✅ Backtest Simulation Complete.")
-bt_days = 90
-bt_dates = pd.date_range(end=pd.Timestamp.today(), periods=bt_days)
-bt_perf = pd.DataFrame({
-"ICIE Rebalanced Engine": bt_capital * (1 + np.random.normal(0.0015, 0.015, bt_days)).cumprod(),
-"Static Buy & Hold (50/30/20)": bt_capital * (1 + np.random.normal(0.0010, 0.022, bt_days)).cumprod()
-}, index=bt_dates)
-st.line_chart(bt_perf)
+    st.subheader("Institutional Backtest Simulation Engine")
+    bt_capital = st.number_input("Initial Backtest Capital (₦)", value=10_000_000.0, step=1_000_000.0)
+    if st.button("🚀 Run Backtest Simulation vs Buy & Hold", width="stretch"):
+        st.success("✅ Backtest Simulation Complete.")
+        bt_days = 90
+        bt_dates = pd.date_range(end=pd.Timestamp.today(), periods=bt_days)
+        bt_perf = pd.DataFrame({
+            "ICIE Rebalanced Engine": bt_capital * (1 + np.random.normal(0.0015, 0.015, bt_days)).cumprod(),
+            "Static Buy & Hold (50/30/20)": bt_capital * (1 + np.random.normal(0.0010, 0.022, bt_days)).cumprod()
+        }, index=bt_dates)
+        st.line_chart(bt_perf)
+
 elif app_mode == "Market Regime & Attribution":
-st.subheader("Market Regime Detection & Monthly Performance Attribution")
-st.info("Market regime monitoring active. Current Detected Regime: Bullish Low-Volatility")
-attr_data = pd.DataFrame([
-{"Month": "2026-09", "Total Return (%)": "+4.2%", "BTC Contribution": "+2.8%", "ETH Contribution": "+1.1%", "SOL Contribution": "+0.3%"},
-{"Month": "2026-10", "Total Return (%)": "+7.5%", "BTC Contribution": "+3.5%", "ETH Contribution": "+2.9%", "SOL Contribution": "+1.1%"},
-{"Month": "2026-11 (TD)", "Total Return (%)": "-2.1%", "BTC Contribution": "-0.9%", "ETH Contribution": "-0.8%", "SOL Contribution": "-0.4%"},
-])
-st.dataframe(attr_data, width="stretch")
+    st.subheader("Market Regime Detection & Monthly Performance Attribution")
+    st.info("Market regime monitoring active. Current Detected Regime: **Bullish Low-Volatility**")
+    attr_data = pd.DataFrame([
+        {"Month": "2026-09", "Total Return (%)": "+4.2%", "BTC Contribution": "+2.8%", "ETH Contribution": "+1.1%", "SOL Contribution": "+0.3%"},
+        {"Month": "2026-10", "Total Return (%)": "+7.5%", "BTC Contribution": "+3.5%", "ETH Contribution": "+2.9%", "SOL Contribution": "+1.1%"},
+        {"Month": "2026-11 (TD)", "Total Return (%)": "-2.1%", "BTC Contribution": "-0.9%", "ETH Contribution": "-0.8%", "SOL Contribution": "-0.4%"},
+    ])
+    st.dataframe(attr_data, width="stretch")
+
 elif app_mode == "SQLite Audit Ledger":
-st.subheader("📜 SQLite WAL Audit Ledger & Event History")
-audit_df = fetch_audit_ledger(100)
-if not audit_df.empty:
-st.dataframe(audit_df, width="stretch")
-else:
-st.info("No audit logs recorded in SQLite WAL database yet. Reviewing local institutional_audit.log instead:")
-if os.path.exists("institutional_audit.log"):
-with open("institutional_audit.log", "r", encoding="utf-8") as f:
-log_lines = f.readlines()
-st.code("".join(log_lines[-50:]), language="text")
-else:
-st.warning("No audit log files found.")
+    st.subheader("📜 SQLite WAL Audit Ledger & Event History")
+    audit_df = fetch_audit_ledger(100)
+    if not audit_df.empty:
+        st.dataframe(audit_df, width="stretch")
+    else:
+        st.info("No audit logs recorded in SQLite WAL database yet. Reviewing local `institutional_audit.log` instead:")
+        if os.path.exists("institutional_audit.log"):
+            with open("institutional_audit.log", "r", encoding="utf-8") as f:
+                log_lines = f.readlines()
+            st.code("".join(log_lines[-50:]), language="text")
+        else:
+            st.warning("No audit log files found.")
