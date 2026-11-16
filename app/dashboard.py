@@ -153,6 +153,26 @@ with st.expander("Luno API & Cross-Pair Diagnostics (Read-Only)", expanded=False
     if st.button("Run Live Luno Connectivity & Liquidity Check"):
         import requests
 
+        req_headers = {
+            "Accept": "application/json",
+            "User-Agent": "ICIE-Portfolio-Engine/1.0",
+        }
+
+        def _safe_parse_json(resp, label: str):
+            ct = resp.headers.get("Content-Type", "unknown")
+            ce = resp.headers.get("Content-Encoding", "none")
+            redirects = [r.status_code for r in resp.history]
+            st.write(
+                f"{label} -> HTTP `{resp.status_code}` | Content-Type: `{ct}` | "
+                f"Encoding: `{ce}` | Bytes: `{len(resp.content)}` | Redirects: `{redirects}`"
+            )
+            try:
+                return resp.json()
+            except ValueError:
+                preview = resp.text[:300] if resp.text else "<EMPTY BODY>"
+                st.code(preview, language="html")
+                return None
+
         luno_sec = st.secrets.get("luno", {}) if hasattr(st.secrets, "get") else {}
         key_id = str(st.secrets.get("LUNO_API_KEY_ID", luno_sec.get("LUNO_API_KEY_ID", ""))).strip()
         key_secret = str(st.secrets.get("LUNO_API_KEY_SECRET", luno_sec.get("LUNO_API_KEY_SECRET", ""))).strip()
@@ -162,30 +182,30 @@ with st.expander("Luno API & Cross-Pair Diagnostics (Read-Only)", expanded=False
         else:
             try:
                 bal_resp = requests.get(
-                    "https://luno.com",
+                    "https://api.luno.com/api/1/balance",
                     auth=(key_id, key_secret),
+                    headers=req_headers,
                     timeout=10,
                 )
-                st.write(f"Private `/api/1/balance` HTTP Status: `{bal_resp.status_code}`")
-                if bal_resp.status_code == 200:
-                    wallets = bal_resp.json().get("balance", [])
+                bal_json = _safe_parse_json(bal_resp, "Private `/api/1/balance`")
+                if bal_resp.status_code == 200 and isinstance(bal_json, dict):
+                    wallets = bal_json.get("balance", [])
                     st.json([
                         {"asset": w.get("asset"), "balance": w.get("balance"), "reserved": w.get("reserved")}
                         for w in wallets
                     ])
-                else:
-                    st.warning(f"Auth/API non-200 response: {bal_resp.text[:200]}")
             except requests.RequestException as exc:
-                st.error(f"Balance endpoint error: {exc}")
+                st.error(f"Balance endpoint network error: {exc}")
 
         target_pairs = {"ETHNGN", "XBTNGN", "SOLNGN", "ETHXBT", "SOLXBT", "ETHUSDT", "ETHUSDC"}
         try:
-            mk_resp = requests.get("https://luno.com", timeout=10)
-            tk_resp = requests.get("https://luno.com", timeout=10)
-            st.write(f"Public `/markets` HTTP `{mk_resp.status_code}` | `/tickers` HTTP `{tk_resp.status_code}`")
+            mk_resp = requests.get("https://api.luno.com/api/exchange/1/markets", headers=req_headers, timeout=10)
+            tk_resp = requests.get("https://api.luno.com/api/1/tickers", headers=req_headers, timeout=10)
+            mk_json = _safe_parse_json(mk_resp, "Public `/markets`")
+            tk_json = _safe_parse_json(tk_resp, "Public `/tickers`")
 
-            if mk_resp.status_code == 200 and tk_resp.status_code == 200:
-                markets = {m["market_id"]: m for m in mk_resp.json().get("markets", []) if m["market_id"] in target_pairs}
+            if isinstance(mk_json, dict) and isinstance(tk_json, dict):
+                markets = {m["market_id"]: m for m in mk_json.get("markets", []) if m["market_id"] in target_pairs}
                 tickers_map = {t["pair"]: t for t in tk_resp.json().get("tickers", []) if t["pair"] in target_pairs}
                 rows = []
                 for p in sorted(target_pairs):
@@ -204,7 +224,7 @@ with st.expander("Luno API & Cross-Pair Diagnostics (Read-Only)", expanded=False
                     })
                 st.dataframe(rows, use_container_width=True)
         except requests.RequestException as exc:
-            st.error(f"Public market check error: {exc}")
+            st.error(f"Public market network error: {exc}")
 
 st.divider()
 if app_mode == "Portfolio & Rebalancing Execution":
