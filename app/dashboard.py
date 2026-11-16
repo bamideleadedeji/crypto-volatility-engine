@@ -150,7 +150,86 @@ m3.metric("XBTNGN Spot Price", f"₦{float(prices.get('XBT', 0.0)):,.2f}")
 m4.metric("ETHNGN Spot Price", f"₦{float(prices.get('ETH', 0.0)):,.2f}")
 
 
-from database.repository import evaluate_high_water_mark
+import json
+import sqlite3
+from datetime import datetime
+
+def evaluate_high_water_mark(current_portfolio_val: float, max_drawdown_pct: float = 0.10) -> dict:
+    db_name = "luno_institutional_engine.db"
+    state_file = "hwm_state.json"
+    initial_invested = 95000.00
+    seed_peak = 59848.50
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    current_val = float(current_portfolio_val)
+
+    with sqlite3.connect(db_name, timeout=30) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS high_water_mark (
+                id INTEGER PRIMARY KEY,
+                initial_invested REAL,
+                peak_value REAL,
+                updated_at TEXT
+            )
+        ''')
+        cursor.execute("SELECT initial_invested, peak_value FROM high_water_mark WHERE id = 1")
+        row = cursor.fetchone()
+        if not row:
+            if os.path.exists(state_file):
+                try:
+                    with open(state_file, "r", encoding="utf-8") as f:
+                        saved = json.load(f)
+                        seed_peak = max(seed_peak, float(saved.get("peak_value", seed_peak)))
+                except Exception:
+                    pass
+            cursor.execute(
+                "INSERT INTO high_water_mark (id, initial_invested, peak_value, updated_at) VALUES (1, ?, ?, ?)",
+                (initial_invested, seed_peak, now_str)
+            )
+            peak_value = seed_peak
+        else:
+            initial_invested = float(row)
+            peak_value = float(row)
+
+        if current_val > peak_value:
+            peak_value = current_val
+            cursor.execute(
+                "UPDATE high_water_mark SET peak_value = ?, updated_at = ? WHERE id = 1",
+                (peak_value, now_str)
+            )
+        conn.commit()
+
+    try:
+        with open(state_file, "w", encoding="utf-8") as f:
+            json.dump({
+                "initial_invested": initial_invested,
+                "peak_value": peak_value,
+                "last_recorded_value": current_val,
+                "updated_at": now_str
+            }, f, indent=2)
+    except Exception:
+        pass
+
+    active_drawdown = ((peak_value - current_val) / peak_value) if (peak_value > 0 and current_val > 0) else 0.0
+    breached = active_drawdown >= max_drawdown_pct
+    treasury_reserve_active = current_val >= 90000.0
+
+    return {
+        "initial_invested": initial_invested,
+        "peak_value": peak_value,
+        "current_value": current_val,
+        "active_drawdown_pct": active_drawdown,
+        "max_drawdown_pct": max_drawdown_pct,
+        "drawdown_breached": breached,
+        "treasury_reserve_active": treasury_reserve_active,
+        "reason": (
+            f"PHASE C HWM GUARD TRIGGERED: Active drawdown {active_drawdown*100:.2f}% from peak ₦{peak_value:,.2f} "
+            f"(>= {max_drawdown_pct*100:.0f}% limit). Holding cleared NGN cash."
+            if breached else
+            f"HWM Guard Healthy: Current ₦{current_val:,.2f} vs Peak ₦{peak_value:,.2f} "
+            f"(Drawdown: {active_drawdown*100:.2f}% < {max_drawdown_pct*100:.0f}% limit)."
+        )
+    }
 
 hwm_telemetry = evaluate_high_water_mark(total_portfolio_val, max_drawdown_pct=0.10)
 c1, c2, c3, c4 = st.columns(4)
@@ -168,6 +247,7 @@ c4.metric(
 )
 if hwm_telemetry["drawdown_breached"]:
     st.error(f"🛡️ {hwm_telemetry['reason']}")
+
 
 with st.expander("Luno API & Cross-Pair Diagnostics (Read-Only)", expanded=False):
     if st.button("Run Live Luno Connectivity & Liquidity Check"):
