@@ -21,21 +21,27 @@ LUNO_MIN_BASE_VOLUMES = {
     "XBTNGN": Decimal("0.000025"),
     "BTCNGN": Decimal("0.000025"),
     "ETHNGN": Decimal("0.001"),
-    "SOLNGN": Decimal("0.05")
+    "SOLNGN": Decimal("0.05"),
+    "ETHXBT": Decimal("0.01"),
+    "SOLXBT": Decimal("0.01"),
 }
 
 LUNO_VOLUME_PRECISION = {
     "XBTNGN": Decimal("0.00000001"),  # 8 decimals
     "BTCNGN": Decimal("0.00000001"),
     "ETHNGN": Decimal("0.000001"),    # 6 decimals
-    "SOLNGN": Decimal("0.01")         # 2 decimals
+    "SOLNGN": Decimal("0.01"),        # 2 decimals
+    "ETHXBT": Decimal("0.01"),        # 2 decimals (verified from Luno markets)
+    "SOLXBT": Decimal("0.001"),       # 3 decimals (verified from Luno markets)
 }
 
 LUNO_PRICE_PRECISION = {
     "XBTNGN": Decimal("1"),             # Whole Naira
     "BTCNGN": Decimal("1"),
     "ETHNGN": Decimal("1"),             # Whole Naira
-    "SOLNGN": Decimal("0.01")           # 2 decimals
+    "SOLNGN": Decimal("0.01"),          # 2 decimals
+    "ETHXBT": Decimal("0.000001"),      # 6 decimals (verified from Luno markets)
+    "SOLXBT": Decimal("0.00001"),       # 5 decimals (verified from Luno markets)
 }
 
 MIN_ORDER_NGN = Decimal("50.00")
@@ -67,6 +73,7 @@ class InstitutionalOrderExecutor:
         counter_volume: str = None,
         amount: float = None,
         quantity: float = None,
+        custom_limit_price: float = None,
         **kwargs
     ) -> dict:
         """
@@ -148,11 +155,14 @@ class InstitutionalOrderExecutor:
         if price_dec <= 0:
             return {"status": "FAILED", "error": f"Invalid spot price ({price_dec}) provided for order execution."}
 
+        is_ngn_pair = clean_pair.endswith("NGN")
         price_tick = LUNO_PRICE_PRECISION.get(clean_pair, Decimal("0.01"))
         vol_tick = LUNO_VOLUME_PRECISION.get(clean_pair, Decimal("0.0001"))
         min_vol_limit = LUNO_MIN_BASE_VOLUMES.get(clean_pair, Decimal("0.001"))
 
-        if clean_side in ["BUY", "BID"]:
+        if custom_limit_price is not None and Decimal(str(custom_limit_price)) > 0:
+            raw_limit_price = Decimal(str(custom_limit_price))
+        elif clean_side in ["BUY", "BID"]:
             raw_limit_price = price_dec * (Decimal("1") + self.aggressive_limit_buffer)
         else:
             raw_limit_price = price_dec * (Decimal("1") - self.aggressive_limit_buffer)
@@ -166,7 +176,7 @@ class InstitutionalOrderExecutor:
         else:
             crypto_units = (resolved_val / limit_price).quantize(vol_tick, rounding=ROUND_DOWN)
 
-        notional_ngn = crypto_units * limit_price
+        notional_ngn = (crypto_units * limit_price) if is_ngn_pair else resolved_val
 
         if crypto_units < min_vol_limit or notional_ngn < MIN_ORDER_NGN:
             error_msg = (
@@ -188,7 +198,7 @@ class InstitutionalOrderExecutor:
         try:
             logger.info(
                 f"Dispatching LIVE {clean_side} order on {clean_pair} | "
-                f"Volume: {crypto_units} | Limit Price: NGN {limit_price:,.2f} | Notional: NGN {notional_ngn:,.2f}"
+                f"Volume: {crypto_units} | Limit Price: {limit_price} | Notional: NGN {notional_ngn:,.2f}"
             )
 
             response = self.connector.post_order(
@@ -231,50 +241,46 @@ class InstitutionalOrderExecutor:
                 order_id=str(order_id),
                 asset=clean_pair,
                 side=clean_side,
-                amount=float(notional_ngn),
-                status="SUCCESS"
-            )
-
-            log_audit(
-                venue="LUNO",
-                asset=clean_pair,
-                price=float(limit_price),
-                amount=float(notional_ngn),
-                units=str(crypto_units),
-                status=f"FILLED_OR_PLACED: {order_id}"
-            )
-
-            self.daily_trades_count += 1
-            return {
-                "status": "SUCCESS",
-                "order_id": str(order_id),
-                "executed_volume": str(crypto_units),
-                "limit_price": float(limit_price),
-                "notional_ngn": float(notional_ngn),
-                "order_response": response
-            }
-
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Order execution exception on {clean_pair}: {error_msg}")
-            record_order(
-                order_hash=order_hash,
-                order_id="EXCEPTION",
-                asset=clean_pair,
-                side=clean_side,
-                amount=float(notional_ngn),
-                status="FAILED"
-            )
-            log_audit(
-                venue="LUNO",
-                asset=clean_pair,
-                price=float(limit_price),
-                amount=float(notional_ngn),
-                units=str(crypto_units),
-                status=f"EXCEPTION: {error_msg}"
-            )
-            return {"status": "FAILED", "error": error_msg}
-
-    def execute_market_order(self, **kwargs) -> dict:
-        """Alias routing market order calls through the validated limit-order executor."""
-        return self.execute_limit_order(**kwargs)
+amount=float(notional_ngn),
+status="SUCCESS"
+)
+log_audit(
+venue="LUNO",
+asset=clean_pair,
+price=float(limit_price),
+amount=float(notional_ngn),
+units=str(crypto_units),
+status=f"FILLED_OR_PLACED: {order_id}"
+)
+self.daily_trades_count += 1
+return {
+"status": "SUCCESS",
+"order_id": str(order_id),
+"executed_volume": str(crypto_units),
+"limit_price": float(limit_price),
+"notional_ngn": float(notional_ngn),
+"order_response": response
+}
+except Exception as e:
+error_msg = str(e)
+logger.error(f"Order execution exception on {clean_pair}: {error_msg}")
+record_order(
+order_hash=order_hash,
+order_id="EXCEPTION",
+asset=clean_pair,
+side=clean_side,
+amount=float(notional_ngn),
+status="FAILED"
+)
+log_audit(
+venue="LUNO",
+asset=clean_pair,
+price=float(limit_price),
+amount=float(notional_ngn),
+units=str(crypto_units),
+status=f"EXCEPTION: {error_msg}"
+)
+return {"status": "FAILED", "error": error_msg}
+def execute_market_order(self, **kwargs) -> dict:
+"""Alias routing market order calls through the validated limit-order executor."""
+return self.execute_limit_order(**kwargs)
