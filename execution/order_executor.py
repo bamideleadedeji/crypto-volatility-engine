@@ -1,4 +1,4 @@
-"""
+ """
 Institutional Crypto Investment Engine (ICIE) - Institutional Order Executor
 Author: Bamidele Adedeji, Principal Consultant (Bamidele & Associates)
 Executes live trades on Luno with integrated circuit breaker validation,
@@ -31,8 +31,8 @@ LUNO_VOLUME_PRECISION = {
     "BTCNGN": Decimal("0.00000001"),
     "ETHNGN": Decimal("0.000001"),    # 6 decimals
     "SOLNGN": Decimal("0.01"),        # 2 decimals
-    "ETHXBT": Decimal("0.01"),        # 2 decimals (verified from Luno markets)
-    "SOLXBT": Decimal("0.001"),       # 3 decimals (verified from Luno markets)
+    "ETHXBT": Decimal("0.01"),        # 2 decimals
+    "SOLXBT": Decimal("0.001"),       # 3 decimals
 }
 
 LUNO_PRICE_PRECISION = {
@@ -40,8 +40,8 @@ LUNO_PRICE_PRECISION = {
     "BTCNGN": Decimal("1"),
     "ETHNGN": Decimal("1"),             # Whole Naira
     "SOLNGN": Decimal("0.01"),          # 2 decimals
-    "ETHXBT": Decimal("0.000001"),      # 6 decimals (verified from Luno markets)
-    "SOLXBT": Decimal("0.00001"),       # 5 decimals (verified from Luno markets)
+    "ETHXBT": Decimal("0.000001"),      # 6 decimals
+    "SOLXBT": Decimal("0.00001"),       # 5 decimals
 }
 
 MIN_ORDER_NGN = Decimal("50.00")
@@ -241,46 +241,50 @@ class InstitutionalOrderExecutor:
                 order_id=str(order_id),
                 asset=clean_pair,
                 side=clean_side,
-amount=float(notional_ngn),
-status="SUCCESS"
-)
-log_audit(
-venue="LUNO",
-asset=clean_pair,
-price=float(limit_price),
-amount=float(notional_ngn),
-units=str(crypto_units),
-status=f"FILLED_OR_PLACED: {order_id}"
-)
-self.daily_trades_count += 1
-return {
-"status": "SUCCESS",
-"order_id": str(order_id),
-"executed_volume": str(crypto_units),
-"limit_price": float(limit_price),
-"notional_ngn": float(notional_ngn),
-"order_response": response
-}
-except Exception as e:
-error_msg = str(e)
-logger.error(f"Order execution exception on {clean_pair}: {error_msg}")
-record_order(
-order_hash=order_hash,
-order_id="EXCEPTION",
-asset=clean_pair,
-side=clean_side,
-amount=float(notional_ngn),
-status="FAILED"
-)
-log_audit(
-venue="LUNO",
-asset=clean_pair,
-price=float(limit_price),
-amount=float(notional_ngn),
-units=str(crypto_units),
-status=f"EXCEPTION: {error_msg}"
-)
-return {"status": "FAILED", "error": error_msg}
-def execute_market_order(self, **kwargs) -> dict:
-"""Alias routing market order calls through the validated limit-order executor."""
-return self.execute_limit_order(**kwargs)
+                amount=float(notional_ngn),
+                status="SUCCESS"
+            )
+
+            log_audit(
+                venue="LUNO",
+                asset=clean_pair,
+                price=float(limit_price),
+                amount=float(notional_ngn),
+                units=str(crypto_units),
+                status=f"FILLED_OR_PLACED: {order_id}"
+            )
+
+            self.daily_trades_count += 1
+            return {
+                "status": "SUCCESS",
+                "order_id": str(order_id),
+                "executed_volume": str(crypto_units),
+                "limit_price": float(limit_price),
+                "notional_ngn": float(notional_ngn),
+                "order_response": response
+            }
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Order execution exception on {clean_pair}: {error_msg}")
+            record_order(
+                order_hash=order_hash,
+                order_id="EXCEPTION",
+                asset=clean_pair,
+                side=clean_side,
+                amount=float(notional_ngn),
+                status="FAILED"
+            )
+            log_audit(
+                venue="LUNO",
+                asset=clean_pair,
+                price=float(limit_price),
+                amount=float(notional_ngn),
+                units=str(crypto_units),
+                status=f"EXCEPTION: {error_msg}"
+            )
+            return {"status": "FAILED", "error": error_msg}
+
+    def execute_market_order(self, **kwargs) -> dict:
+        """Alias routing market order calls through the validated limit-order executor."""
+        return self.execute_limit_order(**kwargs)
