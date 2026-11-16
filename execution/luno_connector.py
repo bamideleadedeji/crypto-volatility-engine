@@ -5,6 +5,7 @@ multi-wallet aggregation (Spot + Savings/Staking), order-book spread inspection,
 """
 
 import logging
+import time
 from decimal import Decimal
 import requests
 
@@ -65,6 +66,34 @@ class LunoConnector:
             tickers[coin] = {'pair': pair, 'last_trade': last_trade, 'bid': bid, 'ask': ask, 'spread_pct': spread_pct}
         return tickers
 
+    def get_pair_ticker(self, pair: str, max_retries: int = 3) -> dict:
+        clean_pair = pair.strip().upper()
+        endpoint = f"{self.base_url}/ticker?pair={clean_pair}"
+        last_exc = None
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(endpoint, timeout=15)
+                if response.status_code == 200:
+                    data = response.json()
+                    last_trade = Decimal(str(data.get('last_trade', '0')))
+                    bid = Decimal(str(data.get('bid', '0')))
+                    ask = Decimal(str(data.get('ask', '0')))
+                    spread_pct = ((ask - bid) / ask) if ask > 0 else Decimal('0')
+                    return {
+                        'pair': clean_pair,
+                        'last_trade': last_trade,
+                        'bid': bid,
+                        'ask': ask,
+                        'spread_pct': spread_pct,
+                    }
+                if response.status_code in (429, 500, 502, 503, 504):
+                    time.sleep(2 ** attempt)
+                    continue
+                raise RuntimeError(f"Ticker HTTP {response.status_code} for {clean_pair}: {response.text[:300]}")
+            except requests.RequestException as exc:
+                last_exc = exc
+                time.sleep(2 ** attempt)
+        raise RuntimeError(f"Failed to fetch ticker for {clean_pair} after {max_retries} attempts: {last_exc}")
 
     def get_spot_prices(self) -> dict:
         tickers = self.get_market_tickers()
