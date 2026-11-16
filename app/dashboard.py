@@ -149,6 +149,26 @@ m2.metric("Cleared Free NGN", f"₦{float(ngn_balance):,.2f}")
 m3.metric("XBTNGN Spot Price", f"₦{float(prices.get('XBT', 0.0)):,.2f}")
 m4.metric("ETHNGN Spot Price", f"₦{float(prices.get('ETH', 0.0)):,.2f}")
 
+
+from database.repository import evaluate_high_water_mark
+
+hwm_telemetry = evaluate_high_water_mark(total_portfolio_val, max_drawdown_pct=0.10)
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Initial Invested Baseline", f"₦{hwm_telemetry['initial_invested']:,.2f}")
+c2.metric("Active High-Water Mark", f"₦{hwm_telemetry['peak_value']:,.2f}")
+c3.metric(
+    "Active Drawdown vs. Peak",
+    f"{hwm_telemetry['active_drawdown_pct']*100:.2f}%",
+    delta="10.0% Guard Limit",
+    delta_color="off"
+)
+c4.metric(
+    "10% NGN Treasury Floor",
+    "ACTIVE (≥ ₦90k)" if hwm_telemetry["treasury_reserve_active"] else "PARKED (< ₦90k)"
+)
+if hwm_telemetry["drawdown_breached"]:
+    st.error(f"🛡️ {hwm_telemetry['reason']}")
+
 with st.expander("Luno API & Cross-Pair Diagnostics (Read-Only)", expanded=False):
     if st.button("Run Live Luno Connectivity & Liquidity Check"):
         import requests
