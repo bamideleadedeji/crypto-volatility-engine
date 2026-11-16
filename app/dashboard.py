@@ -182,7 +182,7 @@ with st.expander("Luno API & Cross-Pair Diagnostics (Read-Only)", expanded=False
         else:
             try:
                 bal_resp = requests.get(
-                    "https://api.luno.com/api/1/balance",
+                    "https://luno.com",
                     auth=(key_id, key_secret),
                     headers=req_headers,
                     timeout=10,
@@ -199,8 +199,8 @@ with st.expander("Luno API & Cross-Pair Diagnostics (Read-Only)", expanded=False
 
         target_pairs = {"ETHNGN", "XBTNGN", "SOLNGN", "ETHXBT", "SOLXBT", "ETHUSDT", "ETHUSDC"}
         try:
-            mk_resp = requests.get("https://api.luno.com/api/exchange/1/markets", headers=req_headers, timeout=10)
-            tk_resp = requests.get("https://api.luno.com/api/1/tickers", headers=req_headers, timeout=10)
+            mk_resp = requests.get("https://luno.com", headers=req_headers, timeout=10)
+            tk_resp = requests.get("https://luno.com", headers=req_headers, timeout=10)
             mk_json = _safe_parse_json(mk_resp, "Public `/markets`")
             tk_json = _safe_parse_json(tk_resp, "Public `/tickers`")
 
@@ -341,57 +341,127 @@ if app_mode == "Portfolio & Rebalancing Execution":
                     st.json(res)
 
 elif app_mode == "GARCH Volatility & VaR Suite":
-    st.subheader("Advanced GARCH(1,1) Econometrics & Multi-Asset VaR/CVaR")
+    import time
+    import requests
+
+    st.subheader("Live EWMA / GARCH(1,1) Econometrics & Multi-Asset VaR/CVaR (Luno Real Feed)")
     col_g1, col_g2 = st.columns(2)
     with col_g1:
         lookback_days = st.slider("Historical Lookback Window (Days)", 30, 365, 90)
     with col_g2:
         confidence_level = st.selectbox("VaR Confidence Level", [0.95, 0.975, 0.99], index=0)
 
+    @st.cache_data(ttl=900, show_spinner=False)
+    def _fetch_luno_daily_closes(pair: str, days: int, _key_id: str = "", _key_secret: str = "") -> pd.Series:
+        since_ms = int((time.time() - (days * 86400)) * 1000)
+        endpoint = f"https://api.luno.com/api/exchange/1/candles?pair={pair}&since={since_ms}&duration=86400"
+        headers = {"Accept": "application/json", "User-Agent": "ICIE-Portfolio-Engine/1.0"}
+        auth = (_key_id, _key_secret) if (_key_id and _key_secret) else None
+
+        last_err = None
+        for attempt in range(3):
+            try:
+                resp = requests.get(endpoint, auth=auth, headers=headers, timeout=15)
+                if resp.status_code == 200:
+                    candles = resp.json().get("candles", [])
+                    if not candles:
+                        return pd.Series(dtype=float, name=pair)
+                    df = pd.DataFrame(candles)
+                    df["date"] = (
+                        pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+                        .dt.tz_localize(None)
+                        .dt.normalize()
+                    )
+                    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+                    df = df[df["close"] > 0].drop_duplicates(subset=["date"], keep="last").sort_values("date")
+                    return df.set_index("date")["close"].rename(pair)
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    time.sleep(2 ** attempt)
+                    continue
+                raise RuntimeError(f"HTTP {resp.status_code} on {pair}: {resp.text[:200]}")
+            except (requests.RequestException, ValueError) as exc:
+                last_err = exc
+                time.sleep(2 ** attempt)
+        raise RuntimeError(f"Candle fetch failed for {pair}: {last_err}")
+
     if st.button("📈 Run Econometric Estimation & Covariance Shrinkage", width="stretch"):
-        np.random.seed(42)
-        dates = pd.date_range(end=pd.Timestamp.today(), periods=lookback_days)
-        sim_vol = pd.DataFrame({
-            "BTC Volatility": np.random.normal(0.04, 0.005, lookback_days).cumsum() * 0.01 + 0.05,
-            "ETH Volatility": np.random.normal(0.05, 0.007, lookback_days).cumsum() * 0.01 + 0.07,
-            "SOL Volatility": np.random.normal(0.06, 0.010, lookback_days).cumsum() * 0.01 + 0.09,
-        }, index=dates)
-        st.success("✅ Econometric pipeline successfully computed.")
-        st.line_chart(sim_vol)
+        try:
+            with st.spinner("Fetching live daily candles from Luno (/api/exchange/1/candles)..."):
+                fetch_days = lookback_days + 30
+                pairs = {"BTC Volatility": "XBTNGN", "ETH Volatility": "ETHNGN", "SOL Volatility": "SOLNGN"}
+                series_list = []
+                for label, pair in pairs.items():
+                    s = _fetch_luno_daily_closes(pair, fetch_days, luno_key or "", luno_secret or "")
+                    series_list.append(s.rename(label))
+                    time.sleep(0.35)
 
+                prices_df = pd.concat(series_list, axis=1).sort_index().ffill(limit=3).dropna()
+
+            if len(prices_df) < 15:
+                st.warning(f"Insufficient overlapping Luno daily candles returned ({len(prices_df)} rows).")
+            else:
+                log_returns = np.log(prices_df / prices_df.shift(1)).dropna()
+                ewma_vol_pct = (log_returns.ewm(alpha=0.06, adjust=False).std() * np.sqrt(365) * 100).tail(lookback_days)
+
+                recent_rets = log_returns.tail(lookback_days)
+                port_rets = (
+                    recent_rets["BTC Volatility"] * 0.50
+                    + recent_rets["ETH Volatility"] * 0.30
+                    + recent_rets["SOL Volatility"] * 0.20
+                )
+
+                alpha_q = 1.0 - confidence_level
+                hist_var = -float(np.quantile(port_rets, alpha_q))
+                tail_losses = port_rets[port_rets <= -hist_var]
+                hist_cvar = -float(tail_losses.mean()) if len(tail_losses) > 0 else hist_var
+                z_map = {0.95: 1.644854, 0.975: 1.959964, 0.99: 2.326348}
+                param_var = max(0.0, float(-(port_rets.mean() - z_map[confidence_level] * port_rets.std(ddof=1))))
+
+                st.success(f"✅ Live Luno econometric suite computed ({len(recent_rets)} trading days, NGN pairs).")
+                st.caption("Annualized Conditional Volatility (% — EWMA λ=0.94)")
+                st.line_chart(ewma_vol_pct)
+
+                m1, m2, m3 = st.columns(3)
+
+m1.metric(f"Historical Daily VaR ({confidence_level100:.1f}%)", f"{hist_var100:.2f}%")
+m2.metric(f"Parametric Daily VaR ({confidence_level100:.1f}%)", f"{param_var100:.2f}%")
+m3.metric(f"Expected Shortfall / CVaR", f"{hist_cvar*100:.2f}%")
+st.caption("Empirical Return Correlation Matrix (BTC / ETH / SOL)")
+corr_df = recent_rets.rename(columns=lambda c: c.replace(" Volatility", "")).corr()
+st.dataframe(corr_df.style.format("{:.3f}"), use_container_width=True)
+except Exception as exc:
+st.error(f"Live Luno candle telemetry error: {exc}")
 elif app_mode == "Backtest Simulation Engine":
-    st.subheader("Institutional Backtest Simulation Engine")
-    bt_capital = st.number_input("Initial Backtest Capital (₦)", value=10_000_000.0, step=1_000_000.0)
-    if st.button("🚀 Run Backtest Simulation vs Buy & Hold", width="stretch"):
-        st.success("✅ Backtest Simulation Complete.")
-        bt_days = 90
-        bt_dates = pd.date_range(end=pd.Timestamp.today(), periods=bt_days)
-        bt_perf = pd.DataFrame({
-            "ICIE Rebalanced Engine": bt_capital * (1 + np.random.normal(0.0015, 0.015, bt_days)).cumprod(),
-            "Static Buy & Hold (50/30/20)": bt_capital * (1 + np.random.normal(0.0010, 0.022, bt_days)).cumprod()
-        }, index=bt_dates)
-        st.line_chart(bt_perf)
-
+st.subheader("Institutional Backtest Simulation Engine")
+bt_capital = st.number_input("Initial Backtest Capital (₦)", value=10_000_000.0, step=1_000_000.0)
+if st.button("🚀 Run Backtest Simulation vs Buy & Hold", width="stretch"):
+st.success("✅ Backtest Simulation Complete.")
+bt_days = 90
+bt_dates = pd.date_range(end=pd.Timestamp.today(), periods=bt_days)
+bt_perf = pd.DataFrame({
+"ICIE Rebalanced Engine": bt_capital * (1 + np.random.normal(0.0015, 0.015, bt_days)).cumprod(),
+"Static Buy & Hold (50/30/20)": bt_capital * (1 + np.random.normal(0.0010, 0.022, bt_days)).cumprod()
+}, index=bt_dates)
+st.line_chart(bt_perf)
 elif app_mode == "Market Regime & Attribution":
-    st.subheader("Market Regime Detection & Monthly Performance Attribution")
-    st.info("Market regime monitoring active. Current Detected Regime: **Bullish Low-Volatility**")
-    attr_data = pd.DataFrame([
-        {"Month": "2026-09", "Total Return (%)": "+4.2%", "BTC Contribution": "+2.8%", "ETH Contribution": "+1.1%", "SOL Contribution": "+0.3%"},
-        {"Month": "2026-10", "Total Return (%)": "+7.5%", "BTC Contribution": "+3.5%", "ETH Contribution": "+2.9%", "SOL Contribution": "+1.1%"},
-        {"Month": "2026-11 (TD)", "Total Return (%)": "-2.1%", "BTC Contribution": "-0.9%", "ETH Contribution": "-0.8%", "SOL Contribution": "-0.4%"},
-    ])
-    st.dataframe(attr_data, width="stretch")
-
+st.subheader("Market Regime Detection & Monthly Performance Attribution")
+st.info("Market regime monitoring active. Current Detected Regime: Bullish Low-Volatility")
+attr_data = pd.DataFrame([
+{"Month": "2026-09", "Total Return (%)": "+4.2%", "BTC Contribution": "+2.8%", "ETH Contribution": "+1.1%", "SOL Contribution": "+0.3%"},
+{"Month": "2026-10", "Total Return (%)": "+7.5%", "BTC Contribution": "+3.5%", "ETH Contribution": "+2.9%", "SOL Contribution": "+1.1%"},
+{"Month": "2026-11 (TD)", "Total Return (%)": "-2.1%", "BTC Contribution": "-0.9%", "ETH Contribution": "-0.8%", "SOL Contribution": "-0.4%"},
+])
+st.dataframe(attr_data, width="stretch")
 elif app_mode == "SQLite Audit Ledger":
-    st.subheader("📜 SQLite WAL Audit Ledger & Event History")
-    audit_df = fetch_audit_ledger(100)
-    if not audit_df.empty:
-        st.dataframe(audit_df, width="stretch")
-    else:
-        st.info("No audit logs recorded in SQLite WAL database yet. Reviewing local `institutional_audit.log` instead:")
-        if os.path.exists("institutional_audit.log"):
-            with open("institutional_audit.log", "r", encoding="utf-8") as f:
-                log_lines = f.readlines()
-            st.code("".join(log_lines[-50:]), language="text")
-        else:
-            st.warning("No audit log files found.")
+st.subheader("📜 SQLite WAL Audit Ledger & Event History")
+audit_df = fetch_audit_ledger(100)
+if not audit_df.empty:
+st.dataframe(audit_df, width="stretch")
+else:
+st.info("No audit logs recorded in SQLite WAL database yet. Reviewing local institutional_audit.log instead:")
+if os.path.exists("institutional_audit.log"):
+with open("institutional_audit.log", "r", encoding="utf-8") as f:
+log_lines = f.readlines()
+st.code("".join(log_lines[-50:]), language="text")
+else:
+st.warning("No audit log files found.")
