@@ -104,10 +104,21 @@ class ICIERebalancer:
         route_ngn = min(eth_sell['val'], xbt_buy['val'])
         eth_spot_ngn = state.get('spot_prices', {}).get('ETH', Decimal('0'))
         free_eth = state.get('free_quantities', {}).get('ETH', Decimal('0'))
-        if eth_spot_ngn <= 0 or route_ngn < MIN_FIAT_NGN:
+        total_port = state.get('total_portfolio', Decimal('0'))
+        xbt_val = state.get('asset_values', {}).get('XBT', Decimal('0'))
+
+        if eth_spot_ngn <= 0 or route_ngn < MIN_FIAT_NGN or total_port <= 0:
             return False, {}
 
         qty = min((route_ngn / eth_spot_ngn).quantize(spec['vol_tick'], rounding=ROUND_DOWN), free_eth)
+
+        # Round up to Luno's 0.01 ETH minimum lot size if wallet holds enough ETH and BTC stays within 60% cap
+        if qty < spec['min_base'] and free_eth >= spec['min_base']:
+            min_lot_ngn = spec['min_base'] * eth_spot_ngn
+            projected_xbt_weight = (xbt_val + min_lot_ngn) / total_port
+            if projected_xbt_weight <= MAX_WEIGHTS['XBT']:
+                qty = spec['min_base']
+
         if qty < spec['min_base']:
             return False, {}
 
