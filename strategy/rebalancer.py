@@ -18,6 +18,9 @@ PAIR_PRECISION = {'XBT': Decimal('0.00000001'), 'ETH': Decimal('0.000001'), 'SOL
 MIN_FIAT_NGN = Decimal('50.00')
 EST_FEE_BUFFER = Decimal('0.0025')
 MAX_SPREAD = Decimal('0.12')
+CROSS_PAIR_SPECS = {
+    'ETHXBT': {'min_base': Decimal('0.001'), 'vol_tick': Decimal('0.0001'), 'price_tick': Decimal('0.0001')}
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ICIERebalancer")
@@ -31,7 +34,7 @@ def _record_audit(venue: str, asset: str, side: str, vol: str, price: float, val
         pass
     try:
         row = pd.DataFrame([{"timestamp": datetime.utcnow().isoformat(), "asset": asset, "side": side,
-                             "volume": vol, "execution_price": round(price, 2),
+                             "volume": vol, "execution_price": round(price, 2) if price >= 10 else round(price, 6),
                              "total_value_ngn": round(val, 2), "status": status}])
         row.to_csv("trade_log.csv", mode="a", header=not os.path.exists("trade_log.csv"), index=False)
     except Exception:
@@ -81,6 +84,45 @@ class ICIERebalancer:
                 'drift': float(drift), 'dynamic_threshold': float(threshold), 'breached': breached
             }
         return drift_detected, analysis
+
+    def _resolve_ethxbt_route(self, state: dict, sells: list, buys: list) -> tuple[bool, dict]:
+        eth_sell = next((s for s in sells if s['coin'] == 'ETH'), None)
+        xbt_buy = next((b for b in buys if b['coin'] == 'XBT'), None)
+        if not eth_sell or not xbt_buy:
+            return False, {}
+
+        try:
+            ethxbt = self.connector.get_pair_ticker("ETHXBT")
+        except Exception as exc:
+            logger.warning(f"[CROSS_ROUTE] ETHXBT ticker unavailable: {exc}")
+            return False, {}
+
+        if ethxbt['bid'] <= 0 or ethxbt['ask'] <= ethxbt['bid'] or ethxbt['spread_pct'] > MAX_SPREAD:
+            return False, {}
+
+        spec = CROSS_PAIR_SPECS['ETHXBT']
+        route_ngn = min(eth_sell['val'], xbt_buy['val'])
+        eth_spot_ngn = state.get('spot_prices', {}).get('ETH', Decimal('0'))
+        free_eth = state.get('free_quantities', {}).get('ETH', Decimal('0'))
+        if eth_spot_ngn <= 0 or route_ngn < MIN_FIAT_NGN:
+            return False, {}
+
+        qty = min((route_ngn / eth_spot_ngn).quantize(spec['vol_tick'], rounding=ROUND_DOWN), free_eth)
+        if qty < spec['min_base']:
+            return False, {}
+
+        sell_px = self._maker_price(ethxbt, ethxbt['ask'], "SELL").quantize(spec['price_tick'], rounding=ROUND_DOWN)
+        if sell_px <= 0:
+            return False, {}
+
+        return True, {
+            'pair': 'ETHXBT',
+            'qty': qty,
+            'sell_px': sell_px,
+            'route_ngn': qty * eth_spot_ngn,
+            'spread_pct': ethxbt['spread_pct'],
+        }
+
     def _preflight_gate(self, state: dict, sells: list, buys: list) -> tuple[bool, str]:
         reserved_total = sum(state.get('reserved_quantities', {}).values())
         if reserved_total > Decimal('0'):
@@ -91,6 +133,13 @@ class ICIERebalancer:
         for s in sells:
             t = tickers.get(s['coin'], {})
             if t.get('spread_pct', Decimal('0')) > MAX_SPREAD:
+                if s['coin'] == 'ETH':
+                    can_cross, route = self._resolve_ethxbt_route(state, sells, buys)
+                    if can_cross:
+                        return True, (
+                            f"ETHNGN spread wide ({t['spread_pct']*100:.2f}%), "
+                            f"routing {route['qty']} ETH -> XBT via ETHXBT (spread {route['spread_pct']*100:.2f}%)."
+                        )
                 return False, f"Spread too wide on {s['coin']}NGN ({t['spread_pct']*100:.2f}% > 12.0%)."
             sell_px = self._maker_price(t, state['spot_prices'][s['coin']], "SELL")
             qty = (s['val'] / sell_px).quantize(PAIR_PRECISION[s['coin']], rounding=ROUND_DOWN)
@@ -144,71 +193,81 @@ class ICIERebalancer:
             _record_audit("ICIE", "PORTFOLIO", "HOLD", "0", 0.0, float(total), f"HALTED: {msg}")
             return {"status": "HALTED_DISBALANCE_GATE", "reason": msg}
 
-        baseline_ngn, expected_gain = state.get('ngn_reserve', Decimal('0')), Decimal('0')
-        executed_sells, executed_buys, trades = 0, 0, 0
-
-        for s in sells:
-            if trades >= 4:
-                break
-            coin, pair = s['coin'], f"{s['coin']}NGN"
-            ticker = state.get('market_tickers', {}).get(coin, {})
-            sell_px = self._maker_price(ticker, state['spot_prices'][coin], "SELL")
-            free_qty = state.get('free_quantities', {}).get(coin, Decimal('0'))
-            qty = min((s['val'] / sell_px).quantize(PAIR_PRECISION[coin], rounding=ROUND_DOWN), free_qty)
-            notional = qty * sell_px
-            if qty < MIN_BASE_VOLUMES[coin] or notional < MIN_FIAT_NGN:
-                continue
-
-            res = self.order_executor.execute_limit_order(
-                pair=pair, side="SELL", target_val=float(notional),
-                current_price=float(sell_px), volume=str(qty), custom_limit_price=float(sell_px)
-            )
-            if res.get("status") == "SUCCESS":
-                executed_sells += 1
-                trades += 1
-                expected_gain += notional * (Decimal('1') - EST_FEE_BUFFER)
-                _record_audit("LUNO", pair, "SELL", str(qty), float(sell_px), float(notional), f"PLACED:{res.get('order_id')}")
-
-        if executed_sells == 0 and baseline_ngn < MIN_FIAT_NGN:
-            return {"status": "FAILED_PHASE1_LIQUIDATION", "executed_sells": 0, "executed_buys": 0}
-
-        refreshed = self._wait_for_ngn_settlement(baseline_ngn, expected_gain)
-        avail_ngn = refreshed.get('ngn_reserve', Decimal('0'))
-        total_def = sum(b['val'] for b in buys)
-        if avail_ngn < MIN_FIAT_NGN or total_def <= 0:
-            return {"status": "MAKER_SELL_RESTING_AWAITING_FILL", "executed_sells": executed_sells, "executed_buys": 0}
-
-        deployable = min(avail_ngn, total_def)
-        for b in buys:
-            if trades >= 4:
-                break
-            coin, pair = b['coin'], f"{b['coin']}NGN"
-
-            # Phase B Volatility & Trend Gate: Hold cleared NGN cash during active crash regimes
-            regime = self.volatility_gate.evaluate_asset_regime(coin)
-            logger.info(f"[VOLATILITY_GATE] {regime['reason']}")
-            if not regime["safe_to_buy"]:
-                _record_audit("ICIE", pair, "HOLD_CASH", "0", 0.0, float(deployable), f"VOL_GATE_HOLD: {regime['reason']}")
-                continue
-
-            ticker = refreshed.get('market_tickers', {}).get(coin, {})
-            buy_px = self._maker_price(ticker, refreshed['spot_prices'][coin], "BUY")
-            alloc = deployable * (b['val'] / total_def)
-            qty = ((alloc / (Decimal('1') + EST_FEE_BUFFER)) / buy_px).quantize(PAIR_PRECISION[coin], rounding=ROUND_DOWN)
-            notional = qty * buy_px
-            if qty < MIN_BASE_VOLUMES[coin] or notional < MIN_FIAT_NGN:
-                continue
-
-            res = self.order_executor.execute_limit_order(
-                pair=pair, side="BUY", target_val=float(notional),
-                current_price=float(buy_px), volume=str(qty), custom_limit_price=float(buy_px)
-            )
-            if res.get("status") == "SUCCESS":
-                executed_buys += 1
-                trades += 1
-                _record_audit("LUNO", pair, "BUY", str(qty), float(buy_px), float(notional), f"PLACED:{res.get('order_id')}")
-
-        return {"status": "SUCCESS", "executed_sells": executed_sells, "executed_buys": executed_buys}
-
-
+        eth_ticker = state.get('market_tickers', {}).get('ETH', {})
+        if eth_ticker.get('spread_pct', Decimal('0')) > MAX_SPREAD:
+            can_cross, route = self._resolve_ethxbt_route(state, sells, buys)
+            if can_cross:
+                regime = self.volatility_gate.evaluate_asset_regime('XBT')
+                logger.info(f"[VOLATILITY_GATE] {regime['reason']}")
+                if not regime["safe_to_buy"]:
+_record_audit("ICIE", "ETHXBT", "HOLD_CASH", "0", 0.0, float(route['route_ngn']), f"VOL_GATE_HOLD: {regime['reason']}")
+return {"status": "HALTED_VOLATILITY_GATE", "reason": regime["reason"]}
+res = self.order_executor.execute_limit_order(
+pair=route['pair'],
+side="SELL",
+target_val=float(route['route_ngn']),
+current_price=float(route['sell_px']),
+volume=str(route['qty']),
+custom_limit_price=float(route['sell_px']),
+)
+if res.get("status") == "SUCCESS":
+_record_audit("LUNO", route['pair'], "SELL", str(route['qty']), float(route['sell_px']), float(route['route_ngn']), f"PLACED:{res.get('order_id')}")
+return {"status": "SUCCESS", "executed_sells": 1, "executed_buys": 1, "route": "ETHXBT"}
+return {"status": "FAILED_CROSS_ROUTE", "reason": res.get("error") or res.get("reason")}
+baseline_ngn, expected_gain = state.get('ngn_reserve', Decimal('0')), Decimal('0')
+executed_sells, executed_buys, trades = 0, 0, 0
+for s in sells:
+if trades >= 4:
+break
+coin, pair = s['coin'], f"{s['coin']}NGN"
+ticker = state.get('market_tickers', {}).get(coin, {})
+sell_px = self._maker_price(ticker, state['spot_prices'][coin], "SELL")
+free_qty = state.get('free_quantities', {}).get(coin, Decimal('0'))
+qty = min((s['val'] / sell_px).quantize(PAIR_PRECISION[coin], rounding=ROUND_DOWN), free_qty)
+notional = qty * sell_px
+if qty < MIN_BASE_VOLUMES[coin] or notional < MIN_FIAT_NGN:
+continue
+res = self.order_executor.execute_limit_order(
+pair=pair, side="SELL", target_val=float(notional),
+current_price=float(sell_px), volume=str(qty), custom_limit_price=float(sell_px)
+)
+if res.get("status") == "SUCCESS":
+executed_sells += 1
+trades += 1
+expected_gain += notional * (Decimal('1') - EST_FEE_BUFFER)
+_record_audit("LUNO", pair, "SELL", str(qty), float(sell_px), float(notional), f"PLACED:{res.get('order_id')}")
+if executed_sells == 0 and baseline_ngn < MIN_FIAT_NGN:
+return {"status": "FAILED_PHASE1_LIQUIDATION", "executed_sells": 0, "executed_buys": 0}
+refreshed = self._wait_for_ngn_settlement(baseline_ngn, expected_gain)
+avail_ngn = refreshed.get('ngn_reserve', Decimal('0'))
+total_def = sum(b['val'] for b in buys)
+if avail_ngn < MIN_FIAT_NGN or total_def <= 0:
+return {"status": "MAKER_SELL_RESTING_AWAITING_FILL", "executed_sells": executed_sells, "executed_buys": 0}
+deployable = min(avail_ngn, total_def)
+for b in buys:
+if trades >= 4:
+break
+coin, pair = b['coin'], f"{b['coin']}NGN"
+# Phase B Volatility & Trend Gate: Hold cleared NGN cash during active crash regimes
+regime = self.volatility_gate.evaluate_asset_regime(coin)
+logger.info(f"[VOLATILITY_GATE] {regime['reason']}")
+if not regime["safe_to_buy"]:
+_record_audit("ICIE", pair, "HOLD_CASH", "0", 0.0, float(deployable), f"VOL_GATE_HOLD: {regime['reason']}")
+continue
+ticker = refreshed.get('market_tickers', {}).get(coin, {})
+buy_px = self._maker_price(ticker, refreshed['spot_prices'][coin], "BUY")
+alloc = deployable * (b['val'] / total_def)
+qty = ((alloc / (Decimal('1') + EST_FEE_BUFFER)) / buy_px).quantize(PAIR_PRECISION[coin], rounding=ROUND_DOWN)
+notional = qty * buy_px
+if qty < MIN_BASE_VOLUMES[coin] or notional < MIN_FIAT_NGN:
+continue
+res = self.order_executor.execute_limit_order(
+pair=pair, side="BUY", target_val=float(notional),
+current_price=float(buy_px), volume=str(qty), custom_limit_price=float(buy_px)
+)
+if res.get("status") == "SUCCESS":
+executed_buys += 1
+trades += 1
+_record_audit("LUNO", pair, "BUY", str(qty), float(buy_px), float(notional), f"PLACED:{res.get('order_id')}")
+return {"status": "SUCCESS", "executed_sells": executed_sells, "executed_buys": executed_buys}
 AutonomousRebalancer = ICIERebalancer
