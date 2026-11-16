@@ -1,16 +1,96 @@
- """
+"""
 Institutional Crypto Investment Engine (ICIE) - Smart Mid-Spread Cashless Rebalancer
 Target Allocation: BTC 50%, ETH 30%, SOL 20% | Maker-First Spread Capture, Volatility Gate & Phase C HWM Guard
 """
 
 import os
+import json
 import time
+import sqlite3
 import logging
 import pandas as pd
 from datetime import datetime
 from decimal import Decimal, ROUND_DOWN
 from risk.volatility_gate import VolatilityRegimeGate
-from database.repository import evaluate_high_water_mark
+
+
+def evaluate_high_water_mark(current_portfolio_val: float, max_drawdown_pct: float = 0.10) -> dict:
+    db_name = "luno_institutional_engine.db"
+    state_file = "hwm_state.json"
+    initial_invested = 95000.00
+    seed_peak = 59848.50
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    current_val = float(current_portfolio_val)
+
+    with sqlite3.connect(db_name, timeout=30) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS high_water_mark (
+                id INTEGER PRIMARY KEY,
+                initial_invested REAL,
+                peak_value REAL,
+                updated_at TEXT
+            )
+        ''')
+        cursor.execute("SELECT initial_invested, peak_value FROM high_water_mark WHERE id = 1")
+        row = cursor.fetchone()
+        if not row:
+            if os.path.exists(state_file):
+                try:
+                    with open(state_file, "r", encoding="utf-8") as f:
+                        saved = json.load(f)
+                        seed_peak = max(seed_peak, float(saved.get("peak_value", seed_peak)))
+                except Exception:
+                    pass
+            cursor.execute(
+                "INSERT INTO high_water_mark (id, initial_invested, peak_value, updated_at) VALUES (1, ?, ?, ?)",
+                (initial_invested, seed_peak, now_str)
+            )
+            peak_value = seed_peak
+        else:
+            initial_invested = float(row)
+            peak_value = float(row)
+
+        if current_val > peak_value:
+            peak_value = current_val
+            cursor.execute(
+                "UPDATE high_water_mark SET peak_value = ?, updated_at = ? WHERE id = 1",
+                (peak_value, now_str)
+            )
+        conn.commit()
+
+    try:
+        with open(state_file, "w", encoding="utf-8") as f:
+            json.dump({
+                "initial_invested": initial_invested,
+                "peak_value": peak_value,
+                "last_recorded_value": current_val,
+                "updated_at": now_str
+            }, f, indent=2)
+    except Exception:
+        pass
+
+    active_drawdown = ((peak_value - current_val) / peak_value) if (peak_value > 0 and current_val > 0) else 0.0
+    breached = active_drawdown >= max_drawdown_pct
+    treasury_reserve_active = current_val >= 90000.0
+
+    return {
+        "initial_invested": initial_invested,
+        "peak_value": peak_value,
+        "current_value": current_val,
+        "active_drawdown_pct": active_drawdown,
+        "max_drawdown_pct": max_drawdown_pct,
+        "drawdown_breached": breached,
+        "treasury_reserve_active": treasury_reserve_active,
+        "reason": (
+            f"PHASE C HWM GUARD TRIGGERED: Active drawdown {active_drawdown*100:.2f}% from peak ₦{peak_value:,.2f} "
+            f"(>= {max_drawdown_pct*100:.0f}% limit). Holding cleared NGN cash."
+            if breached else
+            f"HWM Guard Healthy: Current ₦{current_val:,.2f} vs Peak ₦{peak_value:,.2f} "
+            f"(Drawdown: {active_drawdown*100:.2f}% < {max_drawdown_pct*100:.0f}% limit)."
+        )
+    }
+
 
 TARGET_WEIGHTS = {'XBT': Decimal('0.50'), 'ETH': Decimal('0.30'), 'SOL': Decimal('0.20')}
 MAX_WEIGHTS = {'XBT': Decimal('0.60'), 'ETH': Decimal('0.40'), 'SOL': Decimal('0.30')}
