@@ -19,14 +19,26 @@ class LunoConnector:
         self.api_key_id = api_key_id.strip()
         self.api_key_secret = api_key_secret.strip()
         self.base_url = "https://" + "api." + "luno.com" + "/api/1"
+        self.headers = {
+            "Accept": "application/json",
+            "User-Agent": "ICIE-Portfolio-Engine/1.0",
+        }
+
+    def _safe_json(self, response: requests.Response, context: str) -> dict:
+        try:
+            return response.json()
+        except ValueError:
+            preview = response.text[:200] if response.text else "<EMPTY BODY>"
+            raise RuntimeError(f"Non-JSON response from Luno ({context}, HTTP {response.status_code}): {preview}")
 
     def get_wallet_breakdown(self) -> dict:
         endpoint = f"{self.base_url}/balance"
-        response = requests.get(endpoint, auth=(self.api_key_id, self.api_key_secret), timeout=15)
+        response = requests.get(endpoint, auth=(self.api_key_id, self.api_key_secret), headers=self.headers, timeout=15)
         if response.status_code != 200:
             raise RuntimeError(f"Luno API Error {response.status_code}: {response.text[:300]}")
 
-        balances = response.json().get('balance', [])
+        data = self._safe_json(response, "balance")
+        balances = data.get('balance', [])
         breakdown = {
             'XBT': {'free': Decimal('0'), 'reserved': Decimal('0'), 'total': Decimal('0')},
             'ETH': {'free': Decimal('0'), 'reserved': Decimal('0'), 'total': Decimal('0')},
@@ -54,11 +66,11 @@ class LunoConnector:
         tickers = {}
         for coin, pair in pairs.items():
             endpoint = f"{self.base_url}/ticker?pair={pair}"
-            response = requests.get(endpoint, timeout=15)
+            response = requests.get(endpoint, headers=self.headers, timeout=15)
             if response.status_code != 200:
                 raise RuntimeError(f"Ticker HTTP {response.status_code} for {pair}: {response.text[:300]}")
 
-            data = response.json()
+            data = self._safe_json(response, f"ticker:{pair}")
             last_trade = Decimal(str(data.get('last_trade', '0')))
             bid = Decimal(str(data.get('bid', '0')))
             ask = Decimal(str(data.get('ask', '0')))
@@ -72,9 +84,9 @@ class LunoConnector:
         last_exc = None
         for attempt in range(max_retries):
             try:
-                response = requests.get(endpoint, timeout=15)
+                response = requests.get(endpoint, headers=self.headers, timeout=15)
                 if response.status_code == 200:
-                    data = response.json()
+                    data = self._safe_json(response, f"pair_ticker:{clean_pair}")
                     last_trade = Decimal(str(data.get('last_trade', '0')))
                     bid = Decimal(str(data.get('bid', '0')))
                     ask = Decimal(str(data.get('ask', '0')))
@@ -138,10 +150,10 @@ class LunoConnector:
     def get_order_status(self, order_id: str) -> dict:
         endpoint = f"{self.base_url}/orders/{order_id}"
         try:
-            response = requests.get(endpoint, auth=(self.api_key_id, self.api_key_secret), timeout=15)
+            response = requests.get(endpoint, auth=(self.api_key_id, self.api_key_secret), headers=self.headers, timeout=15)
             if response.status_code != 200:
                 return {"success": False, "status_code": response.status_code, "error": response.text[:300]}
-            return {"success": True, "data": response.json()}
+            return {"success": True, "data": self._safe_json(response, f"order_status:{order_id}")}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -162,10 +174,10 @@ class LunoConnector:
             'price': str(price)
         }
         try:
-            response = requests.post(endpoint, data=payload, auth=(self.api_key_id, self.api_key_secret), timeout=15)
+            response = requests.post(endpoint, data=payload, auth=(self.api_key_id, self.api_key_secret), headers=self.headers, timeout=15)
             if response.status_code != 200:
                 return {"success": False, "status_code": response.status_code, "error": response.text[:300]}
-            res_data = response.json()
+            res_data = self._safe_json(response, f"post_order:{pair}")
             if "error" in res_data:
                 return {"success": False, "error": res_data.get("error"), "data": res_data}
             return {"success": True, "data": res_data}
