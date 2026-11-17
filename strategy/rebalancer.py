@@ -1,4 +1,4 @@
-"""
+ """
 Institutional Crypto Investment Engine (ICIE) - Smart Mid-Spread Cashless Rebalancer
 Target Allocation: BTC 50%, ETH 30%, SOL 20% | Maker-First Spread Capture, Volatility Gate & Phase C HWM Guard
 """
@@ -135,7 +135,6 @@ class ICIERebalancer:
         }
 
     def _effective_weights(self, total_portfolio: Decimal) -> dict:
-        # Phase C: Activate 10% NGN Treasury Reserve Floor once portfolio >= 90,000 NGN
         if total_portfolio >= Decimal('90000'):
             return {coin: w * Decimal('0.90') for coin, w in self.target_weights.items()}
         return self.target_weights
@@ -274,7 +273,6 @@ class ICIERebalancer:
         state = initial_state or self.connector.get_portfolio_valuation()
         total = state['total_portfolio']
 
-        # Phase C: Evaluate High-Water Mark Drawdown Guard & Treasury Reserve Scaling
         hwm_status = evaluate_high_water_mark(float(total), max_drawdown_pct=0.10)
         logger.info(f"[PHASE_C_HWM] {hwm_status['reason']}")
 
@@ -352,7 +350,6 @@ class ICIERebalancer:
         if executed_sells == 0 and baseline_ngn < MIN_FIAT_NGN:
             return {"status": "FAILED_PHASE1_LIQUIDATION", "executed_sells": 0, "executed_buys": 0}
 
-        # Phase C: Halt Phase 2 crypto purchases if High-Water Mark drawdown >= 10%
         if hwm_status["drawdown_breached"]:
             logger.warning(f"[PHASE_C_HWM_HOLD] {hwm_status['reason']}")
             _record_audit("ICIE", "NGN_TREASURY", "HOLD_CASH", "0", 0.0, float(total), hwm_status["reason"])
@@ -367,7 +364,6 @@ class ICIERebalancer:
         refreshed = self._wait_for_ngn_settlement(baseline_ngn, expected_gain)
         avail_ngn = refreshed.get('ngn_reserve', Decimal('0'))
 
-        # Phase C: Hold back 10% NGN Treasury Reserve once portfolio >= 90,000 NGN
         min_ngn_floor = (total * Decimal('0.10')) if hwm_status["treasury_reserve_active"] else MIN_FIAT_NGN
         deployable_ngn = max(Decimal('0'), avail_ngn - min_ngn_floor)
 
@@ -381,24 +377,31 @@ class ICIERebalancer:
                 break
             coin, pair = b['coin'], f"{b['coin']}NGN"
 
-            # Phase B Volatility & Trend Gate: Hold cleared NGN cash during active crash regimes
             regime = self.volatility_gate.evaluate_asset_regime(coin)
             logger.info(f"[VOLATILITY_GATE] {regime['reason']}")
             if not regime["safe_to_buy"]:
                 _record_audit("ICIE", pair, "HOLD_CASH", "0", 0.0, float(deployable), f"VOL_GATE_HOLD: {regime['reason']}")
                 continue
-                            res = self.order_executor.execute_limit_order(
+
+            ticker = refreshed.get('market_tickers', {}).get(coin, {})
+            buy_px = self._maker_price(ticker, refreshed['spot_prices'][coin], "BUY")
+            alloc = deployable * (b['val'] / total_def)
+            qty = ((alloc / (Decimal('1') + EST_FEE_BUFFER)) / buy_px).quantize(PAIR_PRECISION[coin], rounding=ROUND_DOWN)
+            notional = qty * buy_px
+            if qty < MIN_BASE_VOLUMES[coin] or notional < MIN_FIAT_NGN:
+                continue
+
+            res = self.order_executor.execute_limit_order(
                 pair=pair, side="BUY", target_val=float(notional),
                 current_price=float(buy_px), volume=str(qty), custom_limit_price=float(buy_px)
             )
             if res.get("status") == "SUCCESS":
                 executed_buys += 1
                 trades += 1
+
                 _record_audit("LUNO", pair, "BUY", str(qty), float(buy_px), float(notional), f"PLACED:{res.get('order_id')}")
 
         return {"status": "SUCCESS", "executed_sells": executed_sells, "executed_buys": executed_buys, "hwm_status": hwm_status}
 
 
 AutonomousRebalancer = ICIERebalancer
-
-           
