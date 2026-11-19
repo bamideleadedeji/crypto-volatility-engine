@@ -8,3 +8,5 @@ timestamp,asset,side,volume,execution_price,total_value_ngn,status
 2026-11-17T18:23:23.135647,SOLNGN,HOLD_CASH,0,0.0,19701.67,VOL_GATE_HOLD: SOLNGN annualized volatility (250.5%) exceeds 135% ceiling.
 2026-11-18T17:57:00.087851,ETHNGN,HOLD_CASH,0,0.0,19701.67,VOL_GATE_HOLD: ETHNGN annualized volatility (429.3%) exceeds 135% ceiling.
 2026-11-18T17:57:00.298859,SOLNGN,HOLD_CASH,0,0.0,19701.67,VOL_GATE_HOLD: SOLNGN annualized volatility (214.8%) exceeds 135% ceiling.
+2026-11-19T00:12:46.765095,ETHNGN,HOLD_CASH,0,0.0,19701.67,VOL_GATE_HOLD: ETHNGN annualized volatility (429.3%) exceeds 135% ceiling.
+2026-11-19T00:12:46.897673,SOLNGN,HOLD_CASH,0,0.0,19701.67,VOL_GATE_HOLD: SOLNGN annualized volatility (206.0%) exceeds 135% ceiling.
