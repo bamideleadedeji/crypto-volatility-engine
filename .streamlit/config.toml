@@ -1,11 +1,8 @@
 [server]
 headless = true
-address = "0.0.0.0"
-enableCORS = false
-enableXsrfProtection = false
 maxMessageSize = 500
-allowRunOnSave = false
 fileWatcherType = "none"
 
 [browser]
 gatherUsageStats = false
+ 
