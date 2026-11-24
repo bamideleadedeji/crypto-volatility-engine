@@ -15,3 +15,5 @@ timestamp,asset,side,volume,execution_price,total_value_ngn,status
 2026-11-20T17:41:32.241659,SOLNGN,HOLD_CASH,0,0.0,19701.67,VOL_GATE_HOLD: SOLNGN 12h volatility shock (2.37x) during downward slide (-3.49%).
 2026-11-20T23:54:27.658971,ETHNGN,HOLD_CASH,0,0.0,16560.34,VOL_GATE_HOLD: ETHNGN 12h volatility shock (2.21x) during downward slide (-13.74%).
 2026-11-23T21:07:37.341869,ETHNGN,HOLD_CASH,0,0.0,16560.34,"VOL_GATE_HOLD: ETHNGN GARCH(1,1) volatility (186.5%) exceeds 135% ceiling."
+2026-11-24T20:05:00.363692,ETHNGN,HOLD_CASH,0,0.0,16560.34,"VOL_GATE_HOLD: ETHNGN GARCH(1,1) volatility (233.4%) exceeds 135% ceiling."
+2026-11-24T20:05:00.775729,SOLNGN,HOLD_CASH,0,0.0,16560.34,"VOL_GATE_HOLD: SOLNGN GARCH(1,1) volatility (243.5%) exceeds 135% ceiling."
