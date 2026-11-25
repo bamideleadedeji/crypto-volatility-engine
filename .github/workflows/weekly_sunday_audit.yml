@@ -1,0 +1,29 @@
+name: ICIE Weekly Sunday Gmail Excel Audit
+
+on:
+  schedule:
+    - cron: "0 19 * * 0"   # Every Sunday at 19:00 UTC (8:00 PM WAT)
+  workflow_dispatch:       # Allows immediate 1-click test anytime
+
+jobs:
+  send-weekly-excel-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate & Email Weekly ICIE Excel Audit Workbook
+        env:
+          LUNO_API_KEY_ID: ${{ secrets.LUNO_API_KEY_ID }}
+          LUNO_API_KEY_SECRET: ${{ secrets.LUNO_API_KEY_SECRET }}
+          GMAIL_SENDER: ${{ secrets.GMAIL_SENDER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python scripts/weekly_gmail_audit.py
